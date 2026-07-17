@@ -1,0 +1,400 @@
+:root {
+  --surface-gray: #f2f2f2;
+  --bg: #ffffff;
+  --text: #0f1419;
+  --text-muted: #536471;
+  --surface-raised: #ffffff;
+  --divider: #9ca3af;
+  --input-bg: #ffffff;
+  --input-border: var(--surface-gray);
+  --shadow: rgba(0, 0, 0, 0.08);
+}
+
+html[data-theme="dark"] {
+  --surface-gray: #2f3336;
+  --bg: #15202b;
+  --text: #e7e9ea;
+  --text-muted: #8b98a5;
+  --surface-raised: #1e2732;
+  --divider: #38444d;
+  --input-bg: #1e2732;
+  --input-border: #38444d;
+  --shadow: rgba(0, 0, 0, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 320px;
+  font-family: "Segoe UI", "Microsoft JhengHei", sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  padding: 16px;
+}
+
+.header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+header h1 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.theme-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: var(--surface-gray);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.theme-btn:hover {
+  background: var(--divider);
+}
+
+.theme-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+html[data-theme="dark"] .theme-btn .icon-moon {
+  display: none;
+}
+
+html[data-theme="dark"] .theme-btn .icon-sun {
+  display: block;
+}
+
+html:not([data-theme="dark"]) .theme-btn .icon-sun {
+  display: none;
+}
+
+.subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.toggle-group {
+  margin: 12px 0 0;
+  padding: 2px 12px;
+  background: var(--surface-gray);
+  border-radius: 8px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+}
+
+.toggle-row + .toggle-row {
+  border-top: 2px solid var(--divider);
+}
+
+.toggle-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  inset: 0;
+  background: #9ca3af;
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+
+.slider::before {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 3px;
+  top: 3px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s ease;
+}
+
+.switch input:checked + .slider {
+  background: #22c55e;
+}
+
+.switch input:checked + .slider::before {
+  transform: translateX(20px);
+}
+
+.switch input:focus-visible + .slider {
+  outline: 2px solid #1d9bf0;
+  outline-offset: 2px;
+}
+
+.keyword-tabs {
+  margin: 12px 0 0;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 12px;
+  background: var(--surface-gray);
+  border-radius: 10px;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 8px 6px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tab-btn:hover {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.tab-btn.active {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 1px 2px var(--shadow);
+}
+
+.tab-btn.active:hover {
+  background: var(--surface-raised);
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+.add-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.add-row input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 999px;
+  outline: none;
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+.add-row input:focus {
+  border-color: #1d9bf0;
+}
+
+button {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 999px;
+  background: #1d9bf0;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #1a8cd8;
+}
+
+button.secondary {
+  background: var(--surface-gray);
+  color: var(--text);
+}
+
+button.secondary:hover {
+  filter: brightness(0.95);
+}
+
+html[data-theme="dark"] button.secondary:hover {
+  filter: brightness(1.15);
+}
+
+button.theme-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 8px;
+  background: var(--surface-gray);
+  color: var(--text);
+}
+
+button.theme-btn:hover {
+  background: var(--divider);
+  filter: none;
+}
+
+.keyword-list-shell {
+  --keyword-row: 38px;
+  --keyword-gap: 6px;
+  --keyword-visible: 4;
+  position: relative;
+  height: calc(
+    var(--keyword-visible) * var(--keyword-row) +
+      (var(--keyword-visible) - 1) * var(--keyword-gap)
+  );
+}
+
+.keyword-list {
+  list-style: none;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.keyword-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  box-sizing: border-box;
+  height: var(--keyword-row);
+  min-height: var(--keyword-row);
+  padding: 0 10px;
+  margin-bottom: var(--keyword-gap);
+  background: var(--surface-gray);
+  border-radius: 8px;
+  word-break: break-all;
+}
+
+.keyword-list li:last-child {
+  margin-bottom: 0;
+}
+
+.keyword-list li .keyword-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.keyword-list li .keyword-edit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid #1d9bf0;
+  border-radius: 6px;
+  outline: none;
+  font-size: 14px;
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+.keyword-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.keyword-list li .edit-btn,
+.keyword-list li .save-btn,
+.keyword-list li .remove-btn,
+.keyword-list li .cancel-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.keyword-list li .edit-btn {
+  background: #1d9bf0;
+}
+
+.keyword-list li .edit-btn:hover {
+  background: #1a8cd8;
+}
+
+.keyword-list li .save-btn {
+  background: #22c55e;
+}
+
+.keyword-list li .save-btn:hover {
+  background: #16a34a;
+}
+
+.keyword-list li .remove-btn {
+  background: #f4212e;
+}
+
+.keyword-list li .remove-btn:hover {
+  background: #dc1d28;
+}
+
+.keyword-list li .cancel-btn {
+  background: #9ca3af;
+}
+
+.keyword-list li .cancel-btn:hover {
+  background: #6b7280;
+}
+
+.empty-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  pointer-events: none;
+}
+
+footer {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--surface-gray);
+}
+
+footer button {
+  flex: 1;
+}
