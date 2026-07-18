@@ -1,11 +1,10 @@
-const enabledEl = document.getElementById("enabled");
-const markSelectedEl = document.getElementById("markSelected");
 const copyModeEl = document.getElementById("copyMode");
-const creatorModeEnabledEl = document.getElementById("creatorModeEnabled");
 const themeBtn = document.getElementById("themeBtn");
 const exportBtn = document.getElementById("exportBtn");
 const importBtn = document.getElementById("importBtn");
 const importFile = document.getElementById("importFile");
+const modeButtons = Array.from(document.querySelectorAll(".mode-btn"));
+const modeHintEl = document.getElementById("modeHint");
 
 const DEFAULT_SETTINGS = {
   contentKeywords: [],
@@ -13,7 +12,7 @@ const DEFAULT_SETTINGS = {
   enabled: true,
   markSelected: false,
   copyMode: false,
-  creatorModeEnabled: true,
+  creatorModeEnabled: false,
   darkMode: false,
 };
 
@@ -31,6 +30,32 @@ function uniqueKeywords(list) {
   return result;
 }
 
+/**
+ * 過濾模式 / 選中模式 / 貼文管理 為互斥模式，同時間僅能有一個啟用（或全部關閉）。
+ * 用來修正舊版資料可能同時存在多個 true 的情況。
+ */
+function normalizeModes(settings) {
+  const s = { ...settings };
+  if (s.creatorModeEnabled) {
+    s.enabled = false;
+    s.markSelected = false;
+    s.creatorModeEnabled = true;
+  } else if (s.markSelected) {
+    s.enabled = false;
+    s.markSelected = true;
+    s.creatorModeEnabled = false;
+  } else if (s.enabled) {
+    s.enabled = true;
+    s.markSelected = false;
+    s.creatorModeEnabled = false;
+  } else {
+    s.enabled = false;
+    s.markSelected = false;
+    s.creatorModeEnabled = false;
+  }
+  return s;
+}
+
 /** 把舊版 keywords 合併進 contentKeywords，並刪除殘留的 keywords */
 function migrateLegacyKeywords(result, callback) {
   const legacyKeywords = Array.isArray(result.keywords) ? result.keywords : [];
@@ -44,15 +69,15 @@ function migrateLegacyKeywords(result, callback) {
     Array.isArray(result.usernameKeywords) ? result.usernameKeywords : []
   );
 
-  const settings = {
+  const settings = normalizeModes({
     contentKeywords,
     usernameKeywords,
-    enabled: result.enabled !== false,
+    enabled: result.enabled === true,
     markSelected: result.markSelected === true,
     copyMode: result.copyMode === true,
-    creatorModeEnabled: result.creatorModeEnabled !== false,
+    creatorModeEnabled: result.creatorModeEnabled === true,
     darkMode: result.darkMode === true,
-  };
+  });
 
   if (!hasLegacy) {
     callback(settings);
@@ -72,15 +97,18 @@ function getAllSettings(callback) {
 }
 
 function saveAllSettings(settings) {
-  const next = {
+  const next = normalizeModes({
     contentKeywords: uniqueKeywords(settings.contentKeywords),
     usernameKeywords: uniqueKeywords(settings.usernameKeywords),
-    enabled: settings.enabled !== false,
+    enabled: settings.enabled === true,
     markSelected: settings.markSelected === true,
     copyMode: settings.copyMode === true,
-    creatorModeEnabled: settings.creatorModeEnabled !== false,
+    creatorModeEnabled: settings.creatorModeEnabled === true,
     darkMode: settings.darkMode === true,
-  };
+  });
+  next.contentKeywords = uniqueKeywords(settings.contentKeywords);
+  next.usernameKeywords = uniqueKeywords(settings.usernameKeywords);
+
   chrome.storage.sync.set(next, () => {
     chrome.storage.sync.remove("keywords");
   });
@@ -88,10 +116,7 @@ function saveAllSettings(settings) {
 
 function getCurrentToggles() {
   return {
-    enabled: enabledEl ? enabledEl.checked : true,
-    markSelected: markSelectedEl ? markSelectedEl.checked : false,
     copyMode: copyModeEl ? copyModeEl.checked : false,
-    creatorModeEnabled: creatorModeEnabledEl ? creatorModeEnabledEl.checked : true,
     darkMode: document.documentElement ? document.documentElement.dataset.theme === "dark" : false,
   };
 }
@@ -265,13 +290,97 @@ function renderAllKeywords(settings) {
   });
 }
 
+/** 更新三個模式按鈕的啟用(綠)/未啟用(灰)樣式 */
+function updateModeButtons(settings) {
+  modeButtons.forEach((btn) => {
+    const key = btn.dataset.mode;
+    const active = settings[key] === true;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function setModeHint(text) {
+  if (!modeHintEl) return;
+  if (text) {
+    modeHintEl.textContent = text;
+    modeHintEl.hidden = false;
+  } else {
+    modeHintEl.textContent = "";
+    modeHintEl.hidden = true;
+  }
+}
+
+/** 檢查目前分頁是否為自己的貼文留言區，若不是則在按鈕下方顯示提示 */
+function checkOwnPostAndUpdateHint(shouldCheck) {
+  if (!shouldCheck) {
+    setModeHint("");
+    return;
+  }
+
+  if (!chrome.tabs || !chrome.tabs.query) {
+    setModeHint("未在自己的貼文留言區，無法使用");
+    return;
+  }
+
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const tab = tabs && tabs[0];
+    if (!tab || !tab.id) {
+      setModeHint("未在自己的貼文留言區，無法使用");
+      return;
+    }
+
+    chrome.tabs.sendMessage(
+      tab.id,
+      { type: "XBOTFILTER_CHECK_OWN_POST" },
+      (response) => {
+        if (chrome.runtime.lastError || !response || !response.isOwnPost) {
+          setModeHint("未在自己的貼文留言區，無法使用");
+        } else {
+          setModeHint("");
+        }
+      }
+    );
+  });
+}
+
+/** 點擊模式按鈕：三選一（再次點擊啟用中的按鈕會全部關閉） */
+function setMode(modeKey) {
+  getAllSettings((settings) => {
+    const isActive = settings[modeKey] === true;
+    const next = {
+      enabled: false,
+      markSelected: false,
+      creatorModeEnabled: false,
+    };
+    if (!isActive) next[modeKey] = true;
+
+    const merged = { ...settings, ...next, ...getCurrentToggles() };
+    saveAllSettings(merged);
+    updateModeButtons(merged);
+
+    if (modeKey === "creatorModeEnabled") {
+      checkOwnPostAndUpdateHint(next.creatorModeEnabled);
+    } else {
+      setModeHint("");
+    }
+  });
+}
+
+modeButtons.forEach((btn) => {
+  btn.addEventListener("click", () => setMode(btn.dataset.mode));
+});
+
 function loadSettings() {
   getAllSettings((settings) => {
-    if (enabledEl) enabledEl.checked = settings.enabled;
-    if (markSelectedEl) markSelectedEl.checked = settings.markSelected;
     if (copyModeEl) copyModeEl.checked = settings.copyMode;
-    if (creatorModeEnabledEl) creatorModeEnabledEl.checked = settings.creatorModeEnabled;
     applyTheme(settings.darkMode);
+    updateModeButtons(settings);
+    if (settings.creatorModeEnabled) {
+      checkOwnPostAndUpdateHint(true);
+    } else {
+      setModeHint("");
+    }
     renderAllKeywords(settings);
   });
 }
@@ -320,16 +429,13 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
 });
 
-function onToggleChange() {
+function onCopyModeToggle() {
   getAllSettings((settings) => {
     saveAllSettings({ ...settings, ...getCurrentToggles() });
   });
 }
 
-if (enabledEl) enabledEl.addEventListener("change", onToggleChange);
-if (markSelectedEl) markSelectedEl.addEventListener("change", onToggleChange);
-if (copyModeEl) copyModeEl.addEventListener("change", onToggleChange);
-if (creatorModeEnabledEl) creatorModeEnabledEl.addEventListener("change", onToggleChange);
+if (copyModeEl) copyModeEl.addEventListener("change", onCopyModeToggle);
 
 if (themeBtn) {
   themeBtn.addEventListener("click", () => {
@@ -350,10 +456,11 @@ function formatTextSettings(settings) {
     "# 2. [Content] 標記下方代表「貼文內容過濾」關鍵字，每行請填寫一個關鍵字（如：免費領取）。",
     "# 3. [Username] 標記下方代表「使用者名稱過濾」關鍵字，每行請填寫一個帳號或關鍵字（如：bot123 或 @spam）。",
     "# 4. 其他全域開關設定（請寫在各自標記下方，填入 true 或 false）：",
-    "#    - [Enabled] 啟用過濾 (true=開啟, false=關閉)",
-    "#    - [MarkSelected] 關鍵字選中標記模式 (true=開啟徽章標記, false=直接隱藏)",
-    "#    - [CopyMode] 文字複製模式 (true=開啟, false=關閉)",
-    "#    - [CreatorModeEnabled] 創作者管理捷徑 (true=開啟, false=關閉)",
+    "#    - [Enabled] 過濾模式 (true=開啟, false=關閉)",
+    "#    - [MarkSelected] 選中模式 (true=開啟徽章標記, false=關閉)",
+    "#    - [CreatorModeEnabled] 貼文管理 (true=開啟, false=關閉)",
+    "#    - 注意：過濾模式 / 選中模式 / 貼文管理 三者互斥，請僅將其中一個設為 true（或全部 false）。",
+    "#    - [CopyMode] 文字複製模式 (true=開啟, false=關閉，此項獨立於上述三種模式)",
     "#    - [DarkMode] 設定面板黑暗模式 (true=黑暗, false=淺色)",
     "",
     "[Enabled]",
@@ -396,7 +503,7 @@ function parseTextSettings(text) {
     enabled: true,
     markSelected: false,
     copyMode: false,
-    creatorModeEnabled: true,
+    creatorModeEnabled: false,
     darkMode: false,
   };
   
@@ -482,11 +589,14 @@ if (importFile) {
 
         migrateLegacyKeywords(data, (settings) => {
           saveAllSettings(settings);
-          if (enabledEl) enabledEl.checked = settings.enabled;
-          if (markSelectedEl) markSelectedEl.checked = settings.markSelected;
           if (copyModeEl) copyModeEl.checked = settings.copyMode;
-          if (creatorModeEnabledEl) creatorModeEnabledEl.checked = settings.creatorModeEnabled;
           applyTheme(settings.darkMode);
+          updateModeButtons(settings);
+          if (settings.creatorModeEnabled) {
+            checkOwnPostAndUpdateHint(true);
+          } else {
+            setModeHint("");
+          }
           renderAllKeywords(settings);
         });
       } catch (err) {

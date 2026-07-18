@@ -36,31 +36,43 @@
   </header>
 
   <section class="toggle-group">
-    <div class="toggle-row">
-      <span class="toggle-label">啟用過濾</span>
-      <label class="switch" for="enabled">
-        <input type="checkbox" id="enabled" checked />
-        <span class="slider" aria-hidden="true"></span>
-      </label>
+    <div class="mode-btn-row" role="group" aria-label="模式切換">
+      <button
+        type="button"
+        class="mode-btn"
+        id="filterModeBtn"
+        data-mode="enabled"
+        aria-pressed="false"
+      >
+        過濾模式
+      </button>
+      <button
+        type="button"
+        class="mode-btn"
+        id="selectModeBtn"
+        data-mode="markSelected"
+        aria-pressed="false"
+      >
+        選中模式
+      </button>
+      <button
+        type="button"
+        class="mode-btn"
+        id="creatorModeBtn"
+        data-mode="creatorModeEnabled"
+        aria-pressed="false"
+      >
+        貼文管理
+      </button>
     </div>
-    <div class="toggle-row">
-      <span class="toggle-label">關鍵字選中</span>
-      <label class="switch" for="markSelected">
-        <input type="checkbox" id="markSelected" />
-        <span class="slider" aria-hidden="true"></span>
-      </label>
-    </div>
+    <p id="modeHint" class="mode-hint" hidden></p>
+  </section>
+
+  <section class="toggle-group">
     <div class="toggle-row">
       <span class="toggle-label">文字複製模式</span>
       <label class="switch" for="copyMode">
         <input type="checkbox" id="copyMode" />
-        <span class="slider" aria-hidden="true"></span>
-      </label>
-    </div>
-    <div class="toggle-row">
-      <span class="toggle-label">創作者管理捷徑</span>
-      <label class="switch" for="creatorModeEnabled">
-        <input type="checkbox" id="creatorModeEnabled" />
         <span class="slider" aria-hidden="true"></span>
       </label>
     </div>
