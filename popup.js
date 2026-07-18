@@ -334,16 +334,108 @@ if (themeBtn) {
   });
 }
 
+function formatTextSettings(settings) {
+  const lines = [
+    "# XbotFilter 關鍵字設定檔",
+    "# ",
+    "# 格式說明：",
+    "# 1. 以「#」開頭的行數為備註說明，編輯時請勿刪除以保持格式正確，匯入時會自動忽略。",
+    "# 2. [Content] 標記下方代表「貼文內容過濾」關鍵字，每行請填寫一個關鍵字（如：免費領取）。",
+    "# 3. [Username] 標記下方代表「使用者名稱過濾」關鍵字，每行請填寫一個帳號或關鍵字（如：bot123 或 @spam）。",
+    "# 4. 其他全域開關設定（請寫在各自標記下方，填入 true 或 false）：",
+    "#    - [Enabled] 啟用過濾 (true=開啟, false=關閉)",
+    "#    - [MarkSelected] 關鍵字選中標記模式 (true=開啟徽章標記, false=直接隱藏)",
+    "#    - [CopyMode] 文字複製模式 (true=開啟, false=關閉)",
+    "#    - [DarkMode] 設定面板黑暗模式 (true=黑暗, false=淺色)",
+    "",
+    "[Enabled]",
+    settings.enabled ? "true" : "false",
+    "",
+    "[MarkSelected]",
+    settings.markSelected ? "true" : "false",
+    "",
+    "[CopyMode]",
+    settings.copyMode ? "true" : "false",
+    "",
+    "[DarkMode]",
+    settings.darkMode ? "true" : "false",
+    "",
+    "[Content]"
+  ];
+
+  (settings.contentKeywords || []).forEach(kw => {
+    const trimmed = String(kw || "").trim();
+    if (trimmed) lines.push(trimmed);
+  });
+
+  lines.push("", "[Username]");
+  (settings.usernameKeywords || []).forEach(kw => {
+    const trimmed = String(kw || "").trim();
+    if (trimmed) lines.push(trimmed);
+  });
+
+  return lines.join("\r\n");
+}
+
+function parseTextSettings(text) {
+  const lines = text.split(/\r?\n/);
+  const settings = {
+    contentKeywords: [],
+    usernameKeywords: [],
+    enabled: true,
+    markSelected: false,
+    copyMode: false,
+    darkMode: false,
+  };
+  
+  let currentSection = null;
+  let hasSections = false;
+  
+  for (let line of lines) {
+    line = line.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    
+    if (line.startsWith("[") && line.endsWith("]")) {
+      currentSection = line.slice(1, -1).toLowerCase();
+      hasSections = true;
+      continue;
+    }
+    
+    if (currentSection === "content") {
+      settings.contentKeywords.push(line);
+    } else if (currentSection === "username") {
+      settings.usernameKeywords.push(line);
+    } else if (currentSection === "enabled") {
+      settings.enabled = line.toLowerCase() === "true";
+    } else if (currentSection === "markselected") {
+      settings.markSelected = line.toLowerCase() === "true";
+    } else if (currentSection === "copymode") {
+      settings.copyMode = line.toLowerCase() === "true";
+    } else if (currentSection === "darkmode") {
+      settings.darkMode = line.toLowerCase() === "true";
+    }
+  }
+  
+  if (!hasSections && text.trim().length > 0) {
+    throw new Error("Invalid text format: No sections found.");
+  }
+  
+  return settings;
+}
+
 if (exportBtn) {
   exportBtn.addEventListener("click", () => {
     getAllSettings((settings) => {
-      const blob = new Blob([JSON.stringify(settings, null, 2)], {
-        type: "application/json",
+      const textContent = formatTextSettings(settings);
+      const blob = new Blob([textContent], {
+        type: "text/plain;charset=utf-8",
       });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "xbotfilter-keywords.json";
+      link.download = "xbotfilter-keywords.txt";
       link.click();
       URL.revokeObjectURL(url);
     });
@@ -364,7 +456,16 @@ if (importFile) {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const data = JSON.parse(reader.result);
+        const content = reader.result.trim();
+        let data;
+        if (content.startsWith("{")) {
+          // 支援舊版 JSON 匯入
+          data = JSON.parse(content);
+        } else {
+          // 支援新版 TXT 匯入
+          data = parseTextSettings(content);
+        }
+
         migrateLegacyKeywords(data, (settings) => {
           saveAllSettings(settings);
           if (enabledEl) enabledEl.checked = settings.enabled;
@@ -373,7 +474,7 @@ if (importFile) {
           applyTheme(settings.darkMode);
           renderAllKeywords(settings);
         });
-      } catch {
+      } catch (err) {
         alert("匯入失敗：檔案格式不正確");
       }
       importFile.value = "";
