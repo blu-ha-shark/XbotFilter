@@ -26,8 +26,9 @@
   const SPAM_CHECKBOX_CLASS = "xbotfilter-spam-checkbox";
   const SPAM_CHECKBOX_WRAP_CLASS = "xbotfilter-spam-checkbox-wrap";
   const CREATOR_PANEL_ID = "xbotfilter-creator-panel";
-  let creatorMode = false;        // 目前是否處於創作者模式（貼文管理）
-  let currentTweetId = null;      // 目前最上層推文 ID
+  let creatorMode = false;        // 目前是否處於貼文管理模式
+  let creatorRole = null;         // "author"（發文者） | "reader"（讀者） | null
+  let currentTweetId = null;      // 對話串「初始貼文」的狀態 ID（僅發文者模式使用）
   let actionQueue = [];           // 等待處理的 article 佇列
   let queueRunning = false;       // 佇列是否正在執行
   let lastUrl = location.href;    // URL 監聽
@@ -868,25 +869,54 @@
 
   // ===== 貼文管理：頁面偵測與浮動面板 =====
 
-  /** 取得目前登入帳號的 username（小寫）*/
+  /** 取得目前登入帳號的 username（保留原始大小寫，供組網址使用） */
   function getMyUsername() {
     const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
     if (!profileLink) return null;
     const href = profileLink.getAttribute("href") || "";
     const m = href.match(/^\/([^/]+)$/);
-    return m ? m[1].toLowerCase() : null;
+    return m ? m[1] : null;
   }
 
-  /** 判斷是否在自己的貼文頁（ /username/status/id ）*/
-  function isOwnPostPage() {
+  /**
+   * 取得畫面最上層貼文（即整串對話的「初始貼文」）的狀態 ID。
+   * 「隱藏回覆清單」一律綁定在初始貼文上，即使目前瀏覽的是某則
+   * 回覆的回覆（子串留言）的網址，也必須用初始貼文的 ID 才能正確
+   * 跳轉到隱藏清單，否則清單會是空的或無法開啟。
+   */
+  function getRootArticleStatusId() {
+    const rootArticle = document.querySelector('article[data-testid="tweet"]');
+    if (!rootArticle) return null;
+    const timeLink = rootArticle.querySelector("time")?.closest("a");
+    const href = timeLink ? timeLink.getAttribute("href") || "" : "";
+    const m = href.match(/\/status\/(\d+)/);
+    return m ? m[1] : null;
+  }
+
+  /**
+   * 在剛進入貼文管理（發文者）模式時立即記錄初始貼文 ID：
+   * 等待畫面上至少出現一則貼文的時間戳記後，馬上抓取最上層貼文的狀態
+   * ID，之後不再被其他檢查（例如 popup 詢問）意外覆寫成錯誤的 ID。
+   */
+  async function captureRootTweetId() {
+    await waitForElement('article[data-testid="tweet"] time', 3000);
+    const urlMatch = location.pathname.match(/\/status\/(\d+)/);
+    currentTweetId = getRootArticleStatusId() || (urlMatch ? urlMatch[1] : null);
+  }
+
+  /**
+   * 判斷目前分頁的貼文管理身分：
+   * - "author"：目前網址是自己的貼文（可管理留言 / 隱藏回覆）
+   * - "reader"：目前網址是他人的貼文（僅能記錄並封鎖可疑帳號）
+   * - null：不是貼文留言頁面（無法使用貼文管理）
+   */
+  function getPostPageRole() {
     const m = location.pathname.match(/^\/([^/]+)\/status\/(\d+)/);
-    if (!m) return false;
-    const pageUser = m[1].toLowerCase();
-    const tweetId = m[2];
+    if (!m) return null;
     const myUser = getMyUsername();
-    if (!myUser || pageUser !== myUser) return false;
-    currentTweetId = tweetId;
-    return true;
+    if (!myUser) return null;
+    const pageUser = m[1];
+    return pageUser.toLowerCase() === myUser.toLowerCase() ? "author" : "reader";
   }
 
   /** 取得面板的主題（跟隨 X 的亮暗色） */
@@ -899,33 +929,52 @@
     return brightness > 128 ? "light" : "dark";
   }
 
-  /** 建立或取得浮動管理面板 */
-  function createFloatingPanel() {
+  /** 建立或取得浮動管理面板（依身分 author / reader 顯示不同操作） */
+  function createFloatingPanel(role) {
     let panel = document.getElementById(CREATOR_PANEL_ID);
-    if (panel) return panel;
+    if (panel && panel.dataset.role === role) return panel;
+    if (panel) panel.remove();
 
     panel = document.createElement("div");
     panel.id = CREATOR_PANEL_ID;
-    panel.innerHTML = `
-      <div class="xbf-panel-title">🛡️ XbotFilter 貼文管理</div>
-      <div class="xbf-panel-sub" id="xbf-panel-sub">偵測到 0 則疑似機器人留言</div>
-      <div class="xbf-select-row">
-        <input type="checkbox" id="xbf-select-all" />
-        <label for="xbf-select-all">全選 / 取消全選</label>
-      </div>
-      <hr class="xbf-divider" />
-      <div class="xbf-btn-row">
-        <button class="xbf-btn xbf-btn-hide" id="xbf-btn-hide" disabled>一鍵隱藏選取 (0)</button>
-        <button class="xbf-btn xbf-btn-block" id="xbf-btn-block" disabled>一鍵隱藏+封鎖選取 (0)</button>
-      </div>
-      <hr class="xbf-divider" />
-      <div class="xbf-redirect-row">
-        <label><input type="radio" name="xbf-redirect" value="none" checked /> 完成後保留頁面</label>
-        <label><input type="radio" name="xbf-redirect" value="hidden" /> 完成後跳轉至隱藏清單</label>
-        <label><input type="radio" name="xbf-redirect" value="blocked" /> 完成後跳轉至封鎖清單</label>
-      </div>
-      <div class="xbf-progress" id="xbf-panel-progress"></div>
-    `;
+    panel.dataset.role = role;
+
+    if (role === "author") {
+      panel.innerHTML = `
+        <div class="xbf-panel-title">🛡️ XbotFilter 貼文管理（發文者）</div>
+        <div class="xbf-panel-sub" id="xbf-panel-sub">偵測到 0 則疑似機器人留言</div>
+        <div class="xbf-select-row">
+          <input type="checkbox" id="xbf-select-all" />
+          <label for="xbf-select-all">全選 / 取消全選</label>
+        </div>
+        <hr class="xbf-divider" />
+        <div class="xbf-btn-row">
+          <button class="xbf-btn xbf-btn-hide" id="xbf-btn-hide" disabled>一鍵隱藏選取 (0)</button>
+          <button class="xbf-btn xbf-btn-block" id="xbf-btn-block" disabled>一鍵隱藏+封鎖選取 (0)</button>
+        </div>
+        <hr class="xbf-divider" />
+        <div class="xbf-redirect-row">
+          <label><input type="radio" name="xbf-redirect" value="none" checked /> 完成後保留頁面</label>
+          <label><input type="radio" name="xbf-redirect" value="hidden" /> 完成後跳轉至隱藏清單</label>
+        </div>
+        <div class="xbf-progress" id="xbf-panel-progress"></div>
+      `;
+    } else {
+      panel.innerHTML = `
+        <div class="xbf-panel-title">🛡️ XbotFilter 貼文管理（讀者）</div>
+        <div class="xbf-panel-sub" id="xbf-panel-sub">偵測到 0 則疑似機器人留言</div>
+        <div class="xbf-select-row">
+          <input type="checkbox" id="xbf-select-all" />
+          <label for="xbf-select-all">全選 / 取消全選</label>
+        </div>
+        <hr class="xbf-divider" />
+        <div class="xbf-btn-row">
+          <button class="xbf-btn xbf-btn-block" id="xbf-btn-block-reader" disabled>匯出名單並封鎖選取 (0)</button>
+        </div>
+        <div class="xbf-progress" id="xbf-panel-progress"></div>
+      `;
+    }
+
     document.body.appendChild(panel);
 
     // 全選 / 取消全選
@@ -937,12 +986,18 @@
     });
 
     // 按鈕事件
-    document.getElementById("xbf-btn-hide").addEventListener("click", () => {
-      enqueueActions("hide");
-    });
-    document.getElementById("xbf-btn-block").addEventListener("click", () => {
-      enqueueActions("hide_block");
-    });
+    if (role === "author") {
+      document.getElementById("xbf-btn-hide").addEventListener("click", () => {
+        enqueueActions("hide");
+      });
+      document.getElementById("xbf-btn-block").addEventListener("click", () => {
+        enqueueActions("hide_block");
+      });
+    } else {
+      document.getElementById("xbf-btn-block-reader").addEventListener("click", () => {
+        enqueueReaderBlockActions();
+      });
+    }
 
     return panel;
   }
@@ -952,6 +1007,7 @@
     const panel = document.getElementById(CREATOR_PANEL_ID);
     if (!panel) return;
 
+    const role = panel.dataset.role;
     const allFlagged = document.querySelectorAll(`.${SPAM_FLAG_CLASS}`);
     const checkedBoxes = document.querySelectorAll(`.${SPAM_CHECKBOX_CLASS}:checked`);
     const total = allFlagged.length;
@@ -960,21 +1016,29 @@
     const sub = document.getElementById("xbf-panel-sub");
     if (sub) sub.textContent = `偵測到 ${total} 則疑似機器人留言`;
 
-    const hideBtn = document.getElementById("xbf-btn-hide");
-    const blockBtn = document.getElementById("xbf-btn-block");
-    if (hideBtn) {
-      hideBtn.textContent = `一鍵隱藏選取 (${selected})`;
-      hideBtn.disabled = selected === 0 || queueRunning;
-    }
-    if (blockBtn) {
-      blockBtn.textContent = `一鍵隱藏+封鎖選取 (${selected})`;
-      blockBtn.disabled = selected === 0 || queueRunning;
+    if (role === "author") {
+      const hideBtn = document.getElementById("xbf-btn-hide");
+      const blockBtn = document.getElementById("xbf-btn-block");
+      if (hideBtn) {
+        hideBtn.textContent = `一鍵隱藏選取 (${selected})`;
+        hideBtn.disabled = selected === 0 || queueRunning;
+      }
+      if (blockBtn) {
+        blockBtn.textContent = `一鍵隱藏+封鎖選取 (${selected})`;
+        blockBtn.disabled = selected === 0 || queueRunning;
+      }
+    } else {
+      const readerBlockBtn = document.getElementById("xbf-btn-block-reader");
+      if (readerBlockBtn) {
+        readerBlockBtn.textContent = `匯出名單並封鎖選取 (${selected})`;
+        readerBlockBtn.disabled = selected === 0 || queueRunning;
+      }
     }
 
     const selectAll = document.getElementById("xbf-select-all");
     if (selectAll) {
       selectAll.checked = total > 0 && selected === total;
-      selectAll.indeterminate = selected > 0 && selected < total;
+      selectAll.indeterminate = false;
     }
 
     // 更新面板主題
@@ -989,6 +1053,7 @@
       clearSpamFlag(el);
     });
     creatorMode = false;
+    creatorRole = null;
     currentTweetId = null;
     actionQueue = [];
     queueRunning = false;
@@ -1028,6 +1093,57 @@
     return false;
   }
 
+  /** 從選單項目中找到「封鎖」並點擊（排除「取消封鎖」/unblock） */
+  async function clickBlockMenuItem() {
+    const items = document.querySelectorAll('[role="menuitem"], [role="option"]');
+    for (const item of items) {
+      const text = (item.innerText || item.textContent || "").toLowerCase().trim();
+      if (text.includes("取消封鎖") || text.includes("unblock")) continue;
+      if (text.includes("封鎖") || text.includes("block")) {
+        item.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** 取得該則貼文作者的顯示名稱與帳號（@handle） */
+  function getTweetNameAndHandle(article) {
+    const nameNode =
+      article.querySelector('[data-testid="User-Name"]') ||
+      article.querySelector('[data-testid="User-Names"]');
+    if (!nameNode) return null;
+
+    const link = nameNode.querySelector('a[href^="/"]');
+    const href = link ? link.getAttribute("href") || "" : "";
+    const m = href.match(/^\/([^/?]+)/);
+    const handle = m ? `@${m[1]}` : "";
+
+    // 顯示名稱：取節點內文字並排除「@handle」那一行
+    const lines = (nameNode.innerText || "")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const displayName = lines.find((line) => !line.startsWith("@")) || "";
+
+    if (!displayName && !handle) return null;
+    return `${displayName}${handle}`;
+  }
+
+  /** 匯出封鎖使用者名單為 .txt（含顯示名稱＋帳號，例如：香寒🌸同城上门🌸外围选妃@PhoebeUrqupcsw） */
+  function exportBlockedUsernames(usernames) {
+    const unique = [...new Set(usernames.filter(Boolean))];
+    const content = unique.join("\r\n");
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "封鎖使用者名單.txt";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+
   /** 取得完成後跳轉選項 */
   function getRedirectOption() {
     const panel = document.getElementById(CREATOR_PANEL_ID);
@@ -1042,7 +1158,7 @@
     if (el) el.textContent = text;
   }
 
-  /** 模擬點擊佇列主函式 */
+  /** 模擬點擊佇列主函式（發文者：隱藏回覆 / 隱藏+封鎖） */
   async function enqueueActions(actionType) {
     if (queueRunning) return;
 
@@ -1124,24 +1240,108 @@
     setProgress(`完成！已處理 ${done} 則留言。`);
     updateFloatingPanel();
 
-    // 7. 完成後跳轉
+    // 7. 完成後跳轉（僅剩「隱藏清單」，已移除「封鎖清單」）
     const redirect = getRedirectOption();
     await new Promise((r) => setTimeout(r, 800));
     if (redirect === "hidden" && currentTweetId) {
-      location.href = `https://x.com/i/status/${currentTweetId}/hidden`;
-    } else if (redirect === "blocked") {
-      location.href = "https://x.com/settings/blocked_profiles";
+      const myUser = getMyUsername();
+      if (myUser) {
+        location.href = `https://x.com/${myUser}/status/${currentTweetId}/hidden`;
+      } else {
+        location.href = `https://x.com/i/status/${currentTweetId}/hidden`;
+      }
     }
+  }
+
+  /**
+   * 讀者模式主函式：紀錄封鎖使用者名稱 → 匯出封鎖使用者名單.txt →
+   * 逐一點擊「更多(⋯)」→「封鎖」→「封鎖」確認。
+   * 讀者無法隱藏他人貼文的回覆，因此只能對可疑帳號進行封鎖。
+   */
+  async function enqueueReaderBlockActions() {
+    if (queueRunning) return;
+
+    const checkedBoxes = [...document.querySelectorAll(`.${SPAM_CHECKBOX_CLASS}:checked`)];
+    if (checkedBoxes.length === 0) return;
+
+    actionQueue = checkedBoxes.map((cb) => cb.closest('article[data-testid="tweet"]')).filter(Boolean);
+    if (actionQueue.length === 0) return;
+
+    // 1. 紀錄封鎖使用者名稱（顯示名稱＋帳號）
+    const usernames = actionQueue.map(getTweetNameAndHandle).filter(Boolean);
+
+    // 2. 匯出封鎖使用者名單.txt
+    exportBlockedUsernames(usernames);
+
+    queueRunning = true;
+    updateFloatingPanel();
+
+    const total = actionQueue.length;
+    let done = 0;
+
+    for (const article of actionQueue) {
+      if (!article.isConnected) {
+        done++;
+        continue;
+      }
+
+      setProgress(`處理中… ${done + 1} / ${total}`);
+
+      try {
+        article.scrollIntoView({ behavior: "smooth", block: "center" });
+        await new Promise((r) => setTimeout(r, 400));
+
+        // 3. 三個點(更多)
+        const caret = article.querySelector('[data-testid="caret"]');
+        if (!caret) throw new Error("找不到 caret");
+        caret.click();
+
+        // 4. 封鎖（選單項目）
+        const menu = await waitForElement('[role="menu"]', 2000);
+        if (!menu) throw new Error("選單未出現");
+        await new Promise((r) => setTimeout(r, 150));
+        const clicked = await clickBlockMenuItem();
+        if (!clicked) throw new Error("找不到封鎖選項");
+
+        // 5. 封鎖（確認對話框）
+        await new Promise((r) => setTimeout(r, 500));
+        const confirmSheet = await waitForElement('[data-testid="confirmationSheetConfirm"]', 2000);
+        if (confirmSheet) confirmSheet.click();
+
+        await new Promise((r) => setTimeout(r, 300));
+        clearSpamFlag(article);
+      } catch (err) {
+        const escEvent = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+        document.dispatchEvent(escEvent);
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      done++;
+      if (done < total) {
+        await randomDelay(1500, 3000);
+      }
+    }
+
+    queueRunning = false;
+    actionQueue = [];
+    setProgress(`完成！已處理 ${done} 則留言。`);
+    updateFloatingPanel();
   }
 
   // ===== 貼文管理初始化與 URL 監聽 =====
 
   function checkCreatorModeInit() {
-    const shouldBeCreator = creatorModeEnabled && isOwnPostPage();
+    const role = creatorModeEnabled ? getPostPageRole() : null;
+    const shouldBeCreator = !!role;
 
-    if (shouldBeCreator && !creatorMode) {
+    if (shouldBeCreator && (!creatorMode || creatorRole !== role)) {
       creatorMode = true;
-      createFloatingPanel();
+      creatorRole = role;
+      if (role === "author") {
+        // 一進入發文者模式就馬上記錄初始貼文 ID，避免之後被其他檢查覆寫成錯誤的 ID
+        captureRootTweetId();
+      }
+      createFloatingPanel(role);
       // 重新掃描所有推文以套用標記邏輯
       rescanAll({ preserveScroll: false });
       updateFloatingPanel();
@@ -1150,7 +1350,7 @@
       // 重新掃描恢復正常隱藏邏輯
       rescanAll({ preserveScroll: false });
     } else if (shouldBeCreator && creatorMode) {
-      // 同一頁，只更新面板主題
+      // 同一頁、同一身分，只更新面板主題
       updateFloatingPanel();
     }
   }
@@ -1198,9 +1398,11 @@
 
   // 讓 popup 可以詢問目前分頁是否為「自己的貼文留言區」
   // （用於貼文管理模式下，非自己貼文時顯示提示訊息）
+  // 讓 popup 可以詢問目前分頁是否為「貼文留言頁面」
+  // （貼文管理現在同時支援發文者與讀者，只要是貼文留言頁面即可使用）
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message && message.type === "XBOTFILTER_CHECK_OWN_POST") {
-      sendResponse({ isOwnPost: isOwnPostPage() });
+    if (message && message.type === "XBOTFILTER_CHECK_POST_PAGE") {
+      sendResponse({ isPostPage: !!getPostPageRole() });
       return true;
     }
     return false;

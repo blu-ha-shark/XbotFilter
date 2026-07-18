@@ -311,7 +311,7 @@ function setModeHint(text) {
   }
 }
 
-/** 檢查目前分頁是否為自己的貼文留言區，若不是則在按鈕下方顯示提示 */
+/** 檢查目前分頁是否為貼文留言頁面，若不是則在按鈕下方顯示提示（貼文管理現在同時支援發文者與讀者） */
 function checkOwnPostAndUpdateHint(shouldCheck) {
   if (!shouldCheck) {
     setModeHint("");
@@ -319,23 +319,23 @@ function checkOwnPostAndUpdateHint(shouldCheck) {
   }
 
   if (!chrome.tabs || !chrome.tabs.query) {
-    setModeHint("未在自己的貼文留言區，無法使用");
+    setModeHint("非貼文留言頁面，無法使用");
     return;
   }
 
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tab = tabs && tabs[0];
     if (!tab || !tab.id) {
-      setModeHint("未在自己的貼文留言區，無法使用");
+      setModeHint("非貼文留言頁面，無法使用");
       return;
     }
 
     chrome.tabs.sendMessage(
       tab.id,
-      { type: "XBOTFILTER_CHECK_OWN_POST" },
+      { type: "XBOTFILTER_CHECK_POST_PAGE" },
       (response) => {
-        if (chrome.runtime.lastError || !response || !response.isOwnPost) {
-          setModeHint("未在自己的貼文留言區，無法使用");
+        if (chrome.runtime.lastError || !response || !response.isPostPage) {
+          setModeHint("非貼文留言頁面，無法使用");
         } else {
           setModeHint("");
         }
