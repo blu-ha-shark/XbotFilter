@@ -498,6 +498,8 @@
     document.addEventListener("auxclick", onCopyModeAuxClick, true);
   }
 
+  // ===== 關鍵字過濾 =====
+  // 偵測關鍵字是否存在於貼文內容或使用者名稱
   function findMatchedKeyword(text, keywordList) {
     if (!text || keywordList.length === 0) return null;
     const lower = text.toLowerCase();
@@ -868,26 +870,74 @@
 
   // ===== 貼文管理：頁面偵測與浮動面板 =====
 
-  /** 取得目前登入帳號的 username（小寫）*/
+  /** 取得目前登入帳號的 username（保留原始大小寫，供組網址使用） */
   function getMyUsername() {
     const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
     if (!profileLink) return null;
     const href = profileLink.getAttribute("href") || "";
     const m = href.match(/^\/([^/]+)$/);
-    return m ? m[1].toLowerCase() : null;
+    return m ? m[1] : null;
   }
 
-  /** 判斷是否在自己的貼文頁（ /username/status/id ）*/
-  function isOwnPostPage() {
-    const m = location.pathname.match(/^\/([^/]+)\/status\/(\d+)/);
-    if (!m) return false;
-    const pageUser = m[1].toLowerCase();
-    const tweetId = m[2];
-    const myUser = getMyUsername();
-    if (!myUser || pageUser !== myUser) return false;
-    currentTweetId = tweetId;
-    return true;
+ // 在全域或外層宣告一個變數，用來緩存初始貼文的 ID
+let cachedRootTweetId = null;
+
+// 監聽網址變化，當使用者切換到不同推文時，清空快取
+let lastPathname = "";
+function checkUrlChange() {
+  if (location.pathname !== lastPathname) {
+    lastPathname = location.pathname;
+    cachedRootTweetId = null; // 網址換了，清空舊的快取
   }
+}
+
+/**
+ * 取得畫面最上層貼文的狀態 ID（加入終極網址退回快取）
+ */
+function getRootArticleStatusId(fallbackId = null) {
+  checkUrlChange();
+
+  if (cachedRootTweetId) return cachedRootTweetId;
+
+  const articles = document.querySelectorAll('article[data-testid="tweet"]');
+  if (articles.length > 0) {
+    const rootArticle = articles[0];
+    const timeLink = rootArticle.querySelector("time")?.closest("a");
+    const href = timeLink ? timeLink.getAttribute("href") || "" : "";
+    const m = href.match(/\/status\/(\d+)/);
+    
+    if (m && m[1]) {
+      cachedRootTweetId = m[1];
+      return cachedRootTweetId;
+    }
+  }
+
+  // 【修正核心】：如果 DOM 還沒載入好，直接用網址上的 ID 作為快取，防止後續滾動抓錯
+  if (fallbackId) {
+    cachedRootTweetId = fallbackId;
+    return cachedRootTweetId;
+  }
+
+  return null;
+}
+
+/**
+ * 判斷是否在自己的貼文頁
+ */
+function isOwnPostPage() {
+  checkUrlChange();
+  
+  const m = location.pathname.match(/^\/([^/]+)\/status\/(\d+)/);
+  if (!m) return false;
+  
+  const pageUser = m[1];
+  const myUser = getMyUsername();
+  if (!myUser || pageUser.toLowerCase() !== myUser.toLowerCase()) return false;
+
+  // 將網址的 m[2] 當作備用 ID 傳進去
+  currentTweetId = getRootArticleStatusId(m[2]);
+  return true;
+}
 
   /** 取得面板的主題（跟隨 X 的亮暗色） */
   function getPanelTheme() {
@@ -922,7 +972,6 @@
       <div class="xbf-redirect-row">
         <label><input type="radio" name="xbf-redirect" value="none" checked /> 完成後保留頁面</label>
         <label><input type="radio" name="xbf-redirect" value="hidden" /> 完成後跳轉至隱藏清單</label>
-        <label><input type="radio" name="xbf-redirect" value="blocked" /> 完成後跳轉至封鎖清單</label>
       </div>
       <div class="xbf-progress" id="xbf-panel-progress"></div>
     `;
@@ -1128,50 +1177,80 @@
     const redirect = getRedirectOption();
     await new Promise((r) => setTimeout(r, 800));
     if (redirect === "hidden" && currentTweetId) {
-      location.href = `https://x.com/i/status/${currentTweetId}/hidden`;
-    } else if (redirect === "blocked") {
-      location.href = "https://x.com/settings/blocked_profiles";
+      const myUser = getMyUsername();
+      if (myUser) {
+        location.href = `https://x.com/${myUser}/status/${currentTweetId}/hidden`;
+      } else {
+        location.href = `https://x.com/i/status/${currentTweetId}/hidden`;
+      }
     }
   }
 
   // ===== 貼文管理初始化與 URL 監聽 =====
 
-  function checkCreatorModeInit() {
-    const shouldBeCreator = creatorModeEnabled && isOwnPostPage();
+// 【新增】一個用來處理重試次數的計時器變數
+let creatorInitRetryCount = 0;
+let creatorInitRetryTimer = null;
 
-    if (shouldBeCreator && !creatorMode) {
-      creatorMode = true;
-      createFloatingPanel();
-      // 重新掃描所有推文以套用標記邏輯
-      rescanAll({ preserveScroll: false });
-      updateFloatingPanel();
-    } else if (!shouldBeCreator && creatorMode) {
-      destroyCreatorMode();
-      // 重新掃描恢復正常隱藏邏輯
-      rescanAll({ preserveScroll: false });
-    } else if (shouldBeCreator && creatorMode) {
-      // 同一頁，只更新面板主題
-      updateFloatingPanel();
+/**
+ * 具有重試機制的創作者模式檢查
+ * 解決 X 平台 dynamic DOM 渲染太慢導致偵測不到自己貼文的 Bug
+ */
+function checkCreatorModeInitWithRetry() {
+  // 先清除上一次可能還在跑的重試
+  if (creatorInitRetryTimer) {
+    clearTimeout(creatorInitRetryTimer);
+    creatorInitRetryTimer = null;
+  }
+
+  const shouldBeCreator = creatorModeEnabled && isOwnPostPage();
+
+  if (shouldBeCreator && !creatorMode) {
+    creatorMode = true;
+    createFloatingPanel();
+    rescanAll({ preserveScroll: false });
+    updateFloatingPanel();
+    creatorInitRetryCount = 0; // 成功偵測，重試次數歸零
+  } else if (!shouldBeCreator && creatorMode) {
+    destroyCreatorMode();
+    rescanAll({ preserveScroll: false });
+    creatorInitRetryCount = 0;
+  } else if (shouldBeCreator && creatorMode) {
+    updateFloatingPanel();
+    creatorInitRetryCount = 0;
+  } else {
+    // 【核心修復】：如果算出來不該開、但目前也沒開（可能是因為 X 的 DOM 還沒渲染出來而誤判）
+    // 我們在接下來 3 秒內，每隔 300 毫秒就偷偷重新驗證一次，最多重試 10 次
+    if (creatorInitRetryCount < 10) {
+      creatorInitRetryCount++;
+      creatorInitRetryTimer = setTimeout(() => {
+        checkCreatorModeInitWithRetry();
+      }, 300);
+    } else {
+      creatorInitRetryCount = 0; // 超過 10 次（3秒）都抓不到，才徹底放棄
     }
   }
+}
 
-  async function init() {
-    injectStyles();
-    await loadSettings();
-    applyCopyModeClass();
-    bindCopyModeListeners();
-    checkCreatorModeInit();
-    rescanAll();
-    startObserver();
+async function init() {
+  injectStyles();
+  await loadSettings();
+  applyCopyModeClass();
+  bindCopyModeListeners();
+  checkCreatorModeInitWithRetry(); // ➡️ 改呼叫帶有重試機制的新函式
+  rescanAll();
+  startObserver();
 
-    // 監聽 X 的 SPA 路由變化（URL 改變時重新判斷貼文管理模式）
-    setInterval(() => {
-      if (location.href !== lastUrl) {
-        lastUrl = location.href;
-        checkCreatorModeInit();
-      }
-    }, 800);
-  }
+  // 監聽 X 的 SPA 路由變化
+  setInterval(() => {
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      creatorInitRetryCount = 0; // 網址換了，重試次數重設
+      checkCreatorModeInitWithRetry(); // ➡️ 改呼刀重試版本
+    }
+  }, 800);
+}
+
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "sync") return;
