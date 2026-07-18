@@ -1,6 +1,7 @@
 const enabledEl = document.getElementById("enabled");
 const markSelectedEl = document.getElementById("markSelected");
 const copyModeEl = document.getElementById("copyMode");
+const creatorModeEnabledEl = document.getElementById("creatorModeEnabled");
 const themeBtn = document.getElementById("themeBtn");
 const exportBtn = document.getElementById("exportBtn");
 const importBtn = document.getElementById("importBtn");
@@ -12,6 +13,7 @@ const DEFAULT_SETTINGS = {
   enabled: true,
   markSelected: false,
   copyMode: false,
+  creatorModeEnabled: true,
   darkMode: false,
 };
 
@@ -48,6 +50,7 @@ function migrateLegacyKeywords(result, callback) {
     enabled: result.enabled !== false,
     markSelected: result.markSelected === true,
     copyMode: result.copyMode === true,
+    creatorModeEnabled: result.creatorModeEnabled !== false,
     darkMode: result.darkMode === true,
   };
 
@@ -75,6 +78,7 @@ function saveAllSettings(settings) {
     enabled: settings.enabled !== false,
     markSelected: settings.markSelected === true,
     copyMode: settings.copyMode === true,
+    creatorModeEnabled: settings.creatorModeEnabled !== false,
     darkMode: settings.darkMode === true,
   };
   chrome.storage.sync.set(next, () => {
@@ -87,6 +91,7 @@ function getCurrentToggles() {
     enabled: enabledEl ? enabledEl.checked : true,
     markSelected: markSelectedEl ? markSelectedEl.checked : false,
     copyMode: copyModeEl ? copyModeEl.checked : false,
+    creatorModeEnabled: creatorModeEnabledEl ? creatorModeEnabledEl.checked : true,
     darkMode: document.documentElement ? document.documentElement.dataset.theme === "dark" : false,
   };
 }
@@ -265,6 +270,7 @@ function loadSettings() {
     if (enabledEl) enabledEl.checked = settings.enabled;
     if (markSelectedEl) markSelectedEl.checked = settings.markSelected;
     if (copyModeEl) copyModeEl.checked = settings.copyMode;
+    if (creatorModeEnabledEl) creatorModeEnabledEl.checked = settings.creatorModeEnabled;
     applyTheme(settings.darkMode);
     renderAllKeywords(settings);
   });
@@ -323,6 +329,7 @@ function onToggleChange() {
 if (enabledEl) enabledEl.addEventListener("change", onToggleChange);
 if (markSelectedEl) markSelectedEl.addEventListener("change", onToggleChange);
 if (copyModeEl) copyModeEl.addEventListener("change", onToggleChange);
+if (creatorModeEnabledEl) creatorModeEnabledEl.addEventListener("change", onToggleChange);
 
 if (themeBtn) {
   themeBtn.addEventListener("click", () => {
@@ -346,6 +353,7 @@ function formatTextSettings(settings) {
     "#    - [Enabled] 啟用過濾 (true=開啟, false=關閉)",
     "#    - [MarkSelected] 關鍵字選中標記模式 (true=開啟徽章標記, false=直接隱藏)",
     "#    - [CopyMode] 文字複製模式 (true=開啟, false=關閉)",
+    "#    - [CreatorModeEnabled] 創作者管理捷徑 (true=開啟, false=關閉)",
     "#    - [DarkMode] 設定面板黑暗模式 (true=黑暗, false=淺色)",
     "",
     "[Enabled]",
@@ -356,6 +364,9 @@ function formatTextSettings(settings) {
     "",
     "[CopyMode]",
     settings.copyMode ? "true" : "false",
+    "",
+    "[CreatorModeEnabled]",
+    settings.creatorModeEnabled ? "true" : "false",
     "",
     "[DarkMode]",
     settings.darkMode ? "true" : "false",
@@ -385,6 +396,7 @@ function parseTextSettings(text) {
     enabled: true,
     markSelected: false,
     copyMode: false,
+    creatorModeEnabled: true,
     darkMode: false,
   };
   
@@ -413,6 +425,8 @@ function parseTextSettings(text) {
       settings.markSelected = line.toLowerCase() === "true";
     } else if (currentSection === "copymode") {
       settings.copyMode = line.toLowerCase() === "true";
+    } else if (currentSection === "creatormodeenabled") {
+      settings.creatorModeEnabled = line.toLowerCase() === "true";
     } else if (currentSection === "darkmode") {
       settings.darkMode = line.toLowerCase() === "true";
     }
@@ -471,6 +485,7 @@ if (importFile) {
           if (enabledEl) enabledEl.checked = settings.enabled;
           if (markSelectedEl) markSelectedEl.checked = settings.markSelected;
           if (copyModeEl) copyModeEl.checked = settings.copyMode;
+          if (creatorModeEnabledEl) creatorModeEnabledEl.checked = settings.creatorModeEnabled;
           applyTheme(settings.darkMode);
           renderAllKeywords(settings);
         });
