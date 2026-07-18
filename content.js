@@ -15,10 +15,22 @@
   let enabled = true;
   let markSelected = false;
   let copyMode = false;
+  let creatorModeEnabled = true;
   let observer = null;
   let copyModeBound = false;
   let suppressNextClick = false;
   let neutralizedLinks = [];
+
+  // 創作者管理捷徑
+  const SPAM_HIGHLIGHT_CLASS = "xbotfilter-spam-highlight";
+  const SPAM_CHECKBOX_CLASS = "xbotfilter-spam-checkbox";
+  const SPAM_CHECKBOX_WRAP_CLASS = "xbotfilter-spam-checkbox-wrap";
+  const CREATOR_PANEL_ID = "xbotfilter-creator-panel";
+  let creatorMode = false;        // 目前是否處於創作者模式
+  let currentTweetId = null;      // 目前最上層推文 ID
+  let actionQueue = [];           // 等待處理的 article 佇列
+  let queueRunning = false;       // 佇列是否正在執行
+  let lastUrl = location.href;    // URL 監聽
 
   function injectStyles() {
     if (document.getElementById("xbotfilter-styles")) return;
@@ -40,7 +52,154 @@
       .${HIDDEN_CLASS} {
         display: none !important;
       }
-      /* 複製模式：強制可選取，蓋過 X 的 user-select:none 與 hover 干擾 */
+      /* === 創作者管理捷徑：垃圾留言高亮 === */
+      .${SPAM_HIGHLIGHT_CLASS} {
+        background: rgba(255, 60, 60, 0.08) !important;
+        border-left: 3px solid rgba(255, 60, 60, 0.6) !important;
+        box-sizing: border-box;
+        transition: background 0.2s;
+      }
+      .${SPAM_CHECKBOX_WRAP_CLASS} {
+        position: absolute;
+        top: 8px;
+        left: 6px;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .${SPAM_CHECKBOX_CLASS} {
+        width: 18px;
+        height: 18px;
+        cursor: pointer;
+        accent-color: #f4212e;
+        flex-shrink: 0;
+      }
+      /* 讓推文 article 變為 relative 以容納 checkbox */
+      article[data-testid="tweet"].${SPAM_HIGHLIGHT_CLASS} {
+        position: relative !important;
+      }
+      /* === 創作者浮動面板 === */
+      #${CREATOR_PANEL_ID} {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 999999;
+        width: 280px;
+        background: #15202b;
+        border: 1px solid #38444d;
+        border-radius: 16px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+        padding: 16px;
+        font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif;
+        color: #e7e9ea;
+        font-size: 13px;
+        user-select: none;
+      }
+      #${CREATOR_PANEL_ID}[data-theme="light"] {
+        background: #ffffff;
+        border-color: #eff3f4;
+        color: #0f1419;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.12);
+      }
+      #${CREATOR_PANEL_ID} .xbf-panel-title {
+        font-size: 14px;
+        font-weight: 700;
+        margin-bottom: 4px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      #${CREATOR_PANEL_ID} .xbf-panel-sub {
+        font-size: 12px;
+        color: #8b98a5;
+        margin-bottom: 12px;
+      }
+      #${CREATOR_PANEL_ID}[data-theme="light"] .xbf-panel-sub {
+        color: #536471;
+      }
+      #${CREATOR_PANEL_ID} .xbf-select-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 10px;
+        font-size: 12px;
+      }
+      #${CREATOR_PANEL_ID} .xbf-select-row input[type=checkbox] {
+        accent-color: #1d9bf0;
+        width: 15px;
+        height: 15px;
+        cursor: pointer;
+      }
+      #${CREATOR_PANEL_ID} .xbf-btn-row {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        margin-bottom: 10px;
+      }
+      #${CREATOR_PANEL_ID} .xbf-btn {
+        padding: 9px 12px;
+        border: none;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 13px;
+        cursor: pointer;
+        text-align: center;
+        transition: opacity 0.15s;
+      }
+      #${CREATOR_PANEL_ID} .xbf-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      #${CREATOR_PANEL_ID} .xbf-btn-hide {
+        background: #1d9bf0;
+        color: #fff;
+      }
+      #${CREATOR_PANEL_ID} .xbf-btn-hide:not(:disabled):hover {
+        background: #1a8cd8;
+      }
+      #${CREATOR_PANEL_ID} .xbf-btn-block {
+        background: #f4212e;
+        color: #fff;
+      }
+      #${CREATOR_PANEL_ID} .xbf-btn-block:not(:disabled):hover {
+        background: #dc1d28;
+      }
+      #${CREATOR_PANEL_ID} .xbf-redirect-row {
+        margin-bottom: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      #${CREATOR_PANEL_ID} .xbf-redirect-row label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      #${CREATOR_PANEL_ID} .xbf-redirect-row input[type=radio] {
+        accent-color: #1d9bf0;
+        cursor: pointer;
+      }
+      #${CREATOR_PANEL_ID} .xbf-progress {
+        font-size: 12px;
+        color: #8b98a5;
+        min-height: 16px;
+        text-align: center;
+      }
+      #${CREATOR_PANEL_ID}[data-theme="light"] .xbf-progress {
+        color: #536471;
+      }
+      #${CREATOR_PANEL_ID} .xbf-divider {
+        border: none;
+        border-top: 1px solid #38444d;
+        margin: 10px 0;
+      }
+      #${CREATOR_PANEL_ID}[data-theme="light"] .xbf-divider {
+        border-color: #eff3f4;
+      }
+      /* 複製模式相關樣式 */
       html.${COPY_MODE_CLASS} article[data-testid="tweet"] [data-testid="User-Name"],
       html.${COPY_MODE_CLASS} article[data-testid="tweet"] [data-testid="User-Name"] *,
       html.${COPY_MODE_CLASS} article[data-testid="tweet"] [data-testid="User-Names"],
@@ -69,7 +228,6 @@
         -webkit-user-drag: none !important;
         user-drag: none !important;
       }
-      /* 關閉個人頁 hover 卡片，避免蓋住選取 */
       html.${COPY_MODE_CLASS} [data-testid="HoverCard"],
       html.${COPY_MODE_CLASS} [data-testid="HoverCardPortal"],
       body.${COPY_MODE_CLASS} [data-testid="HoverCard"],
@@ -100,6 +258,7 @@
           enabled: true,
           markSelected: false,
           copyMode: false,
+          creatorModeEnabled: true,
         },
         (result) => {
           const legacyKeywords = Array.isArray(result.keywords)
@@ -117,6 +276,7 @@
           enabled = result.enabled !== false;
           markSelected = result.markSelected === true;
           copyMode = result.copyMode === true;
+          creatorModeEnabled = result.creatorModeEnabled !== false;
           applyCopyModeClass();
 
           // 舊版 keywords 殘留時：合併進 contentKeywords 並刪除
@@ -134,6 +294,7 @@
                 enabled,
                 markSelected,
                 copyMode,
+                creatorModeEnabled,
               },
               () => chrome.storage.sync.remove("keywords")
             );
@@ -442,8 +603,61 @@
     article.removeAttribute(MARKED_ATTR);
   }
 
+  // ===== 創作者管理捷徑：高亮標記與 Checkbox =====
+
+  /** 高亮推文並插入 checkbox */
+  function highlightSpamTweet(article) {
+    if (article.classList.contains(SPAM_HIGHLIGHT_CLASS)) return;
+    article.classList.add(SPAM_HIGHLIGHT_CLASS);
+    showTweet(article);
+    unmarkTweet(article);
+
+    if (!article.querySelector(`.${SPAM_CHECKBOX_WRAP_CLASS}`)) {
+      const wrap = document.createElement("div");
+      wrap.className = SPAM_CHECKBOX_WRAP_CLASS;
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = SPAM_CHECKBOX_CLASS;
+      cb.checked = true;
+      cb.title = "選取此留言進行批次管理";
+      cb.addEventListener("change", updateFloatingPanel);
+      // 阻止點擊 checkbox 觸發推文導覽
+      cb.addEventListener("click", (e) => e.stopPropagation());
+      wrap.appendChild(cb);
+      article.appendChild(wrap);
+    }
+    updateFloatingPanel();
+  }
+
+  /** 清除高亮標記與 checkbox */
+  function clearSpamHighlight(article) {
+    article.classList.remove(SPAM_HIGHLIGHT_CLASS);
+    const wrap = article.querySelector(`.${SPAM_CHECKBOX_WRAP_CLASS}`);
+    if (wrap) wrap.remove();
+    updateFloatingPanel();
+  }
+
   function applyTweetFilter(article) {
     const match = tweetMatchesFilter(article);
+
+    // 創作者管理模式：主貼文以外的留言才高亮（跳過頁面最頂端的主推文）
+    if (creatorMode && creatorModeEnabled && match && enabled) {
+      // 跳過本推文（主貼文）：若 article 是頁面上第一則推文
+      const allArticles = document.querySelectorAll('article[data-testid="tweet"]');
+      if (allArticles.length > 0 && allArticles[0] === article) {
+        // 主貼文：不隱藏也不高亮
+        clearSpamHighlight(article);
+        showTweet(article);
+        unmarkTweet(article);
+        return;
+      }
+      clearSpamHighlight(article);
+      highlightSpamTweet(article);
+      return;
+    }
+
+    // 非創作者模式：清除高亮
+    clearSpamHighlight(article);
 
     if (match && markSelected) {
       showTweet(article);
@@ -627,13 +841,311 @@
     });
   }
 
+  // ===== 創作者管理捷徑：頁面偵測與浮動面板 =====
+
+  /** 取得目前登入帳號的 username（小寫）*/
+  function getMyUsername() {
+    const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+    if (!profileLink) return null;
+    const href = profileLink.getAttribute("href") || "";
+    const m = href.match(/^\/([^/]+)$/);
+    return m ? m[1].toLowerCase() : null;
+  }
+
+  /** 判斷是否在自己的貼文頁（ /username/status/id ）*/
+  function isOwnPostPage() {
+    const m = location.pathname.match(/^\/([^/]+)\/status\/(\d+)/);
+    if (!m) return false;
+    const pageUser = m[1].toLowerCase();
+    const tweetId = m[2];
+    const myUser = getMyUsername();
+    if (!myUser || pageUser !== myUser) return false;
+    currentTweetId = tweetId;
+    return true;
+  }
+
+  /** 取得面板的主題（跟隨 X 的亮暗色） */
+  function getPanelTheme() {
+    const bg = getComputedStyle(document.body).backgroundColor;
+    if (!bg) return "dark";
+    const rgb = bg.match(/\d+/g);
+    if (!rgb) return "dark";
+    const brightness = 0.299 * Number(rgb[0]) + 0.587 * Number(rgb[1]) + 0.114 * Number(rgb[2]);
+    return brightness > 128 ? "light" : "dark";
+  }
+
+  /** 建立或取得浮動管理面板 */
+  function createFloatingPanel() {
+    let panel = document.getElementById(CREATOR_PANEL_ID);
+    if (panel) return panel;
+
+    panel = document.createElement("div");
+    panel.id = CREATOR_PANEL_ID;
+    panel.innerHTML = `
+      <div class="xbf-panel-title">🛡️ XbotFilter 創作者模式</div>
+      <div class="xbf-panel-sub" id="xbf-panel-sub">偵測到 0 則疑似機器人留言</div>
+      <div class="xbf-select-row">
+        <input type="checkbox" id="xbf-select-all" />
+        <label for="xbf-select-all">全選 / 取消全選</label>
+      </div>
+      <hr class="xbf-divider" />
+      <div class="xbf-btn-row">
+        <button class="xbf-btn xbf-btn-hide" id="xbf-btn-hide" disabled>一鍵隱藏選取 (0)</button>
+        <button class="xbf-btn xbf-btn-block" id="xbf-btn-block" disabled>一鍵隱藏+封鎖選取 (0)</button>
+      </div>
+      <hr class="xbf-divider" />
+      <div class="xbf-redirect-row">
+        <label><input type="radio" name="xbf-redirect" value="none" checked /> 完成後保留頁面</label>
+        <label><input type="radio" name="xbf-redirect" value="hidden" /> 完成後跳轉至隱藏清單</label>
+        <label><input type="radio" name="xbf-redirect" value="blocked" /> 完成後跳轉至封鎖清單</label>
+      </div>
+      <div class="xbf-progress" id="xbf-panel-progress"></div>
+    `;
+    document.body.appendChild(panel);
+
+    // 全選 / 取消全選
+    document.getElementById("xbf-select-all").addEventListener("change", (e) => {
+      document.querySelectorAll(`.${SPAM_CHECKBOX_CLASS}`).forEach((cb) => {
+        cb.checked = e.target.checked;
+      });
+      updateFloatingPanel();
+    });
+
+    // 按鈕事件
+    document.getElementById("xbf-btn-hide").addEventListener("click", () => {
+      enqueueActions("hide");
+    });
+    document.getElementById("xbf-btn-block").addEventListener("click", () => {
+      enqueueActions("hide_block");
+    });
+
+    return panel;
+  }
+
+  /** 更新浮動面板顯示的計數 */
+  function updateFloatingPanel() {
+    const panel = document.getElementById(CREATOR_PANEL_ID);
+    if (!panel) return;
+
+    const allHighlighted = document.querySelectorAll(`.${SPAM_HIGHLIGHT_CLASS}`);
+    const checkedBoxes = document.querySelectorAll(`.${SPAM_CHECKBOX_CLASS}:checked`);
+    const total = allHighlighted.length;
+    const selected = checkedBoxes.length;
+
+    const sub = document.getElementById("xbf-panel-sub");
+    if (sub) sub.textContent = `偵測到 ${total} 則疑似機器人留言`;
+
+    const hideBtn = document.getElementById("xbf-btn-hide");
+    const blockBtn = document.getElementById("xbf-btn-block");
+    if (hideBtn) {
+      hideBtn.textContent = `一鍵隱藏選取 (${selected})`;
+      hideBtn.disabled = selected === 0 || queueRunning;
+    }
+    if (blockBtn) {
+      blockBtn.textContent = `一鍵隱藏+封鎖選取 (${selected})`;
+      blockBtn.disabled = selected === 0 || queueRunning;
+    }
+
+    const selectAll = document.getElementById("xbf-select-all");
+    if (selectAll) {
+      selectAll.checked = total > 0 && selected === total;
+      selectAll.indeterminate = selected > 0 && selected < total;
+    }
+
+    // 更新面板主題
+    panel.dataset.theme = getPanelTheme();
+  }
+
+  /** 移除浮動面板並清除所有高亮 */
+  function destroyCreatorMode() {
+    const panel = document.getElementById(CREATOR_PANEL_ID);
+    if (panel) panel.remove();
+    document.querySelectorAll(`.${SPAM_HIGHLIGHT_CLASS}`).forEach((el) => {
+      clearSpamHighlight(el);
+    });
+    creatorMode = false;
+    currentTweetId = null;
+    actionQueue = [];
+    queueRunning = false;
+  }
+
+  // ===== 模擬點擊佇列 =====
+
+  function randomDelay(min = 1500, max = 3000) {
+    return new Promise((resolve) => setTimeout(resolve, Math.random() * (max - min) + min));
+  }
+
+  function waitForElement(selector, timeout = 2000) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const check = () => {
+        const el = document.querySelector(selector);
+        if (el) return resolve(el);
+        if (Date.now() - start > timeout) return resolve(null);
+        setTimeout(check, 80);
+      };
+      check();
+    });
+  }
+
+  /** 從選單項目中找到「隱藏回覆」並點擊 */
+  async function clickHideReplyMenuItem() {
+    // X 的選單項目 selector
+    const items = document.querySelectorAll('[role="menuitem"], [role="option"]');
+    const HIDE_TEXTS = ["隱藏回覆", "hide reply", "hide tweet", "hide post"];
+    for (const item of items) {
+      const text = (item.innerText || item.textContent || "").toLowerCase().trim();
+      if (HIDE_TEXTS.some((t) => text.includes(t))) {
+        item.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** 取得完成後跳轉選項 */
+  function getRedirectOption() {
+    const panel = document.getElementById(CREATOR_PANEL_ID);
+    if (!panel) return "none";
+    const checked = panel.querySelector('input[name="xbf-redirect"]:checked');
+    return checked ? checked.value : "none";
+  }
+
+  /** 設定進度文字 */
+  function setProgress(text) {
+    const el = document.getElementById("xbf-panel-progress");
+    if (el) el.textContent = text;
+  }
+
+  /** 模擬點擊佇列主函式 */
+  async function enqueueActions(actionType) {
+    if (queueRunning) return;
+
+    // 收集目前被勾選的 article
+    const checkedBoxes = [...document.querySelectorAll(`.${SPAM_CHECKBOX_CLASS}:checked`)];
+    if (checkedBoxes.length === 0) return;
+
+    actionQueue = checkedBoxes.map((cb) => cb.closest('article[data-testid="tweet"]')).filter(Boolean);
+    if (actionQueue.length === 0) return;
+
+    queueRunning = true;
+    updateFloatingPanel();
+
+    const total = actionQueue.length;
+    let done = 0;
+
+    for (const article of actionQueue) {
+      if (!article.isConnected) {
+        done++;
+        continue;
+      }
+
+      setProgress(`處理中… ${done + 1} / ${total}`);
+
+      try {
+        // 1. 滾動至目標推文
+        article.scrollIntoView({ behavior: "smooth", block: "center" });
+        await new Promise((r) => setTimeout(r, 400));
+
+        // 2. 點擊三點選單 (caret)
+        const caret = article.querySelector('[data-testid="caret"]');
+        if (!caret) throw new Error("找不到 caret");
+        caret.click();
+
+        // 3. 等待選單出現並點擊「隱藏回覆」
+        const menu = await waitForElement('[role="menu"]', 2000);
+        if (!menu) throw new Error("選單未出現");
+        await new Promise((r) => setTimeout(r, 150));
+        const clicked = await clickHideReplyMenuItem();
+        if (!clicked) throw new Error("找不到隱藏回覆選項");
+
+        // 4. 等待確認對話框「也要封鎖嗎？」
+        await new Promise((r) => setTimeout(r, 500));
+        const confirmSheet = await waitForElement('[data-testid="confirmationSheetConfirm"]', 2000);
+        const cancelSheet = document.querySelector('[data-testid="confirmationSheetCancel"]');
+
+        if (confirmSheet && cancelSheet) {
+          if (actionType === "hide_block") {
+            // 點擊「封鎖」（紅色按鈕）
+            confirmSheet.click();
+          } else {
+            // 點擊「否」（黑色按鈕）
+            cancelSheet.click();
+          }
+        } else if (confirmSheet) {
+          // 只有一個按鈕時直接點擊
+          confirmSheet.click();
+        }
+
+        // 5. 成功：清除高亮
+        await new Promise((r) => setTimeout(r, 300));
+        clearSpamHighlight(article);
+      } catch (err) {
+        // 單一項目失敗：關閉可能殘留的選單再繼續
+        const escEvent = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+        document.dispatchEvent(escEvent);
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      done++;
+      // 6. 隨機延遲 1.5s ~ 3s
+      if (done < total) {
+        await randomDelay(1500, 3000);
+      }
+    }
+
+    queueRunning = false;
+    actionQueue = [];
+    setProgress(`完成！已處理 ${done} 則留言。`);
+    updateFloatingPanel();
+
+    // 7. 完成後跳轉
+    const redirect = getRedirectOption();
+    await new Promise((r) => setTimeout(r, 800));
+    if (redirect === "hidden" && currentTweetId) {
+      location.href = `https://x.com/i/status/${currentTweetId}/hidden`;
+    } else if (redirect === "blocked") {
+      location.href = "https://x.com/settings/blocked_profiles";
+    }
+  }
+
+  // ===== 創作者模式初始化與 URL 監聽 =====
+
+  function checkCreatorModeInit() {
+    const shouldBeCreator = creatorModeEnabled && isOwnPostPage();
+
+    if (shouldBeCreator && !creatorMode) {
+      creatorMode = true;
+      createFloatingPanel();
+      // 重新掃描所有推文以套用高亮邏輯
+      rescanAll({ preserveScroll: false });
+      updateFloatingPanel();
+    } else if (!shouldBeCreator && creatorMode) {
+      destroyCreatorMode();
+      // 重新掃描恢復正常隱藏邏輯
+      rescanAll({ preserveScroll: false });
+    } else if (shouldBeCreator && creatorMode) {
+      // 同一頁，只更新面板主題
+      updateFloatingPanel();
+    }
+  }
+
   async function init() {
     injectStyles();
     await loadSettings();
     applyCopyModeClass();
     bindCopyModeListeners();
+    checkCreatorModeInit();
     rescanAll();
     startObserver();
+
+    // 監聽 X 的 SPA 路由變化（URL 改變時重新判斷創作者模式）
+    setInterval(() => {
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        checkCreatorModeInit();
+      }
+    }, 800);
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -644,16 +1156,23 @@
       applyCopyModeClass();
     }
 
+    if (changes.creatorModeEnabled) {
+      creatorModeEnabled = changes.creatorModeEnabled.newValue !== false;
+      checkCreatorModeInit();
+    }
+
     if (
       changes.contentKeywords ||
       changes.usernameKeywords ||
       changes.keywords ||
       changes.enabled ||
-      changes.markSelected
+      changes.markSelected ||
+      changes.creatorModeEnabled
     ) {
-      loadSettings().then(() => rescanAll({ preserveScroll: true }));
-    } else if (changes.copyMode) {
-      // copyMode 已在上方套用，不需重掃貼文
+      loadSettings().then(() => {
+        checkCreatorModeInit();
+        rescanAll({ preserveScroll: true });
+      });
     }
   });
 
