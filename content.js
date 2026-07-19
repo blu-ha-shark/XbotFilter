@@ -21,17 +21,24 @@
   let suppressNextClick = false;
   let neutralizedLinks = [];
 
-  // 創作者管理捷徑（貼文管理）
-  const SPAM_FLAG_CLASS = "xbotfilter-spam-highlight"; // 僅作為狀態標記，不再附加視覺樣式
+  // 貼文管理（checkbox / 封鎖佇列 直接接在「選中模式」的標記結果上）
   const SPAM_CHECKBOX_CLASS = "xbotfilter-spam-checkbox";
   const SPAM_CHECKBOX_WRAP_CLASS = "xbotfilter-spam-checkbox-wrap";
   const CREATOR_PANEL_ID = "xbotfilter-creator-panel";
   let creatorMode = false;        // 目前是否處於貼文管理模式
   let creatorRole = null;         // "author"（發文者） | "reader"（讀者） | null
   let currentTweetId = null;      // 對話串「初始貼文」的狀態 ID（僅發文者模式使用）
-  let actionQueue = [];           // 等待處理的 article 佇列
   let queueRunning = false;       // 佇列是否正在執行
   let lastUrl = location.href;    // URL 監聽
+  let suppressCreatorSync = false; // 換頁後短暫抑制名單同步，等新頁面穩定再重新載入
+  /**
+   * 被標記貼文的臨時名單：以 @handle 為 key（同一個帳號只會有一筆）。
+   * 每筆記錄：{ handle, label, checked, scrollY }
+   * - handle：用來配對「是否為記錄裡一樣的帳號」
+   * - checked：使用者手動勾選/取消勾選的狀態，畫面外消失、重新出現後仍會沿用
+   * - scrollY：偵測到時的文件捲動位置，封鎖動作前先捲到這裡讓貼文重新掛載
+   */
+  let flaggedRecords = new Map();
 
   function injectStyles() {
     if (document.getElementById("xbotfilter-styles")) return;
@@ -499,6 +506,21 @@
     document.addEventListener("auxclick", onCopyModeAuxClick, true);
   }
 
+  /** 佇列執行中（queueRunning）時封鎖滾輪捲動，避免使用者手動捲動干擾自動化流程 */
+  function blockWheelDuringQueue(event) {
+    if (queueRunning) {
+      event.preventDefault();
+    }
+  }
+
+  let queueLockBound = false;
+  function bindQueueLockListeners() {
+    if (queueLockBound) return;
+    queueLockBound = true;
+    window.addEventListener("wheel", blockWheelDuringQueue, { passive: false });
+  }
+
+
   function findMatchedKeyword(text, keywordList) {
     if (!text || keywordList.length === 0) return null;
     const lower = text.toLowerCase();
@@ -617,86 +639,137 @@
     article.removeAttribute(MARKED_ATTR);
   }
 
-  // ===== 貼文管理：勾選框（放在「更多」選單按鈕右側） =====
+  // ===== 貼文管理：勾選框（放在「更多」選單按鈕右側），資料來源是「選中模式」的標記結果 =====
 
-  /** 在推文的「更多」(caret) 按鈕右側插入勾選框；樣式沿用選中模式的徽章，不再額外套用高亮框 */
-  function flagSpamTweet(article, match) {
-    article.classList.add(SPAM_FLAG_CLASS);
-    showTweet(article);
-    markTweet(article, match);
-    insertCreatorCheckbox(article);
+  /** 取得該則貼文作者的帳號（@handle）與「顯示名稱+帳號」標籤 */
+  function getArticleHandleInfo(article) {
+    const nameNode =
+      article.querySelector('[data-testid="User-Name"]') ||
+      article.querySelector('[data-testid="User-Names"]');
+    if (!nameNode) return null;
+
+    const link = nameNode.querySelector('a[href^="/"]');
+    const href = link ? link.getAttribute("href") || "" : "";
+    const m = href.match(/^\/([^/?]+)/);
+    const handle = m ? `@${m[1]}` : "";
+    if (!handle) return null;
+
+    const lines = (nameNode.innerText || "")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const displayName = lines.find((line) => !line.startsWith("@")) || "";
+
+    return { handle, label: `${displayName}${handle}` };
+  }
+
+  /** 在目前畫面上，依 @handle 找回對應的貼文節點 */
+  function findArticleByHandle(handle) {
+    const articles = document.querySelectorAll('article[data-testid="tweet"]');
+    for (const article of articles) {
+      const info = getArticleHandleInfo(article);
+      if (info && info.handle === handle) return article;
+    }
+    return null;
+  }
+
+  /**
+   * 把「已被選中模式標記」的貼文同步進臨時名單並掛上勾選框：
+   * - 名單裡已經有這個 @handle → 讀出先前記錄的 ON/OFF 狀態套用到（重新掛載的）勾選框上
+   * - 名單裡沒有 → 新增一筆記錄，預設勾選 ON，並記下目前的捲動位置
+   */
+  function syncCreatorCheckbox(article) {
+    const info = getArticleHandleInfo(article);
+    if (!info) return;
+
+    const scrollY = window.scrollY + article.getBoundingClientRect().top;
+
+    let record = flaggedRecords.get(info.handle);
+    if (!record) {
+      record = { handle: info.handle, label: info.label, checked: true, scrollY, blocked: false };
+      flaggedRecords.set(info.handle, record);
+    } else {
+      record.label = info.label;
+      record.scrollY = scrollY; // 位置持續更新，維持最新的滾輪位置
+    }
+
+    let wrap = article.querySelector(`.${SPAM_CHECKBOX_WRAP_CLASS}`);
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.className = SPAM_CHECKBOX_WRAP_CLASS;
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = SPAM_CHECKBOX_CLASS;
+      cb.title = "選取此留言進行批次管理";
+      cb.addEventListener("click", (e) => e.stopPropagation());
+      wrap.appendChild(cb);
+
+      const caret = article.querySelector('[data-testid="caret"]');
+      const caretBtn = caret ? caret.closest('[role="button"]') : null;
+      if (caretBtn && caretBtn.parentElement) {
+        caretBtn.insertAdjacentElement("afterend", wrap);
+      } else if (caret && caret.parentElement) {
+        caret.insertAdjacentElement("afterend", wrap);
+      } else {
+        article.appendChild(wrap);
+      }
+    }
+
+    const cb = wrap.querySelector(`.${SPAM_CHECKBOX_CLASS}`);
+    cb.checked = record.checked; // 載入名單裡記錄的 ON/OFF 狀態
+    cb.disabled = queueRunning; // 封鎖/隱藏佇列執行中，禁止使用者更動勾選
+    cb.onchange = () => {
+      record.checked = cb.checked;
+      updateFloatingPanel();
+    };
+
     updateFloatingPanel();
   }
 
-  function insertCreatorCheckbox(article) {
-    if (article.querySelector(`.${SPAM_CHECKBOX_WRAP_CLASS}`)) return;
-
-    const wrap = document.createElement("div");
-    wrap.className = SPAM_CHECKBOX_WRAP_CLASS;
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.className = SPAM_CHECKBOX_CLASS;
-    cb.checked = true;
-    cb.title = "選取此留言進行批次管理";
-    cb.addEventListener("change", updateFloatingPanel);
-    // 阻止點擊 checkbox 觸發推文導覽
-    cb.addEventListener("click", (e) => e.stopPropagation());
-    wrap.appendChild(cb);
-
-    const caret = article.querySelector('[data-testid="caret"]');
-    const caretBtn = caret ? caret.closest('[role="button"]') : null;
-
-    if (caretBtn && caretBtn.parentElement) {
-      caretBtn.insertAdjacentElement("afterend", wrap);
-    } else if (caret && caret.parentElement) {
-      caret.insertAdjacentElement("afterend", wrap);
-    } else {
-      article.appendChild(wrap);
-    }
-  }
-
-  /** 清除貼文管理標記：移除勾選框與徽章 */
-  function clearSpamFlag(article) {
-    article.classList.remove(SPAM_FLAG_CLASS);
+  /** 從畫面上移除勾選框（不影響名單裡的記錄，記錄仍保留供之後重新掛載時讀回） */
+  function removeCreatorCheckbox(article) {
     const wrap = article.querySelector(`.${SPAM_CHECKBOX_WRAP_CLASS}`);
     if (wrap) wrap.remove();
-    unmarkTweet(article);
-    updateFloatingPanel();
   }
 
   function applyTweetFilter(article) {
     const match = tweetMatchesFilter(article);
+    const inCreatorMode = creatorMode && creatorModeEnabled;
 
-    // 貼文管理模式：主貼文以外的留言才標記（跳過頁面最頂端的主推文）
-    if (creatorMode && creatorModeEnabled && match) {
+    // 貼文管理模式下，主貼文（頁面最頂端那則）不算在管理範圍內
+    let isRootPost = false;
+    if (inCreatorMode) {
       const allArticles = document.querySelectorAll('article[data-testid="tweet"]');
-      if (allArticles.length > 0 && allArticles[0] === article) {
-        // 主貼文：不隱藏也不標記
-        clearSpamFlag(article);
+      isRootPost = allArticles.length > 0 && allArticles[0] === article;
+    }
+
+    // 「選中模式」的標記邏輯是主線：選中模式開啟、或目前處於貼文管理模式，
+    // 符合條件的貼文一律用同一套「顯示徽章、不隱藏」邏輯呈現。
+    const useBadgeMode = markSelected || inCreatorMode;
+    const shouldBadge = match && !isRootPost;
+
+    if (useBadgeMode) {
+      if (shouldBadge) {
         showTweet(article);
-        return;
+        markTweet(article, match);
+      } else {
+        unmarkTweet(article);
+        showTweet(article);
       }
-      flagSpamTweet(article, match);
-      return;
-    }
-
-    // 非貼文管理模式：清除標記
-    if (article.classList.contains(SPAM_FLAG_CLASS)) {
-      clearSpamFlag(article);
-    }
-
-    if (match && markSelected) {
-      showTweet(article);
-      markTweet(article, match);
-      return;
-    }
-
-    unmarkTweet(article);
-
-    if (match && enabled) {
-      hideTweet(article);
     } else {
-      showTweet(article);
+      unmarkTweet(article);
+      if (match && enabled) {
+        hideTweet(article);
+      } else {
+        showTweet(article);
+      }
+    }
+
+    // 貼文管理模式：checkbox 直接接在「選中模式」標記的結果上
+    if (inCreatorMode && !suppressCreatorSync && shouldBadge) {
+      syncCreatorCheckbox(article);
+    } else {
+      removeCreatorCheckbox(article);
     }
   }
 
@@ -810,9 +883,48 @@
     scrollByDelta(anchor.scroller, newTop - anchor.offsetTop);
   }
 
+  /**
+   * 取得該則貼文穩定不變的「簽章」（用它自己的狀態網址 ID）。
+   * X 的留言區是虛擬清單，捲動時同一個 DOM 節點常會被「回收」拿去顯示
+   * 另一則完全不同的貼文；只用一次性的布林值記錄「處理過了」會導致
+   * 回收後的節點誤判成處理過，殘留舊推文的 checkbox / 徽章，造成
+   * 全選按鈕邏輯錯亂、「偵測到 N 則」數字對不上畫面。改用簽章比對，
+   * 簽章不同就代表節點被回收顯示了別的推文，需要清掉舊狀態重新套用。
+   */
+  function getTweetSignature(article) {
+    const timeLink = article.querySelector("time")?.closest("a");
+    const href = timeLink ? timeLink.getAttribute("href") || "" : "";
+    const m = href.match(/\/status\/(\d+)/);
+    return m ? m[1] : null;
+  }
+
+  /** 清除我們自己注入在這則貼文上的殘留狀態（badge / checkbox / 隱藏樣式） */
+  function resetArticleState(article) {
+    unmarkTweet(article);
+    showTweet(article);
+    removeCreatorCheckbox(article);
+  }
+
   function processTweet(article) {
-    if (article.getAttribute(PROCESSED_ATTR)) return;
-    article.setAttribute(PROCESSED_ATTR, "true");
+    const sig = getTweetSignature(article);
+    const prevSig = article.getAttribute(PROCESSED_ATTR);
+
+    // 簽章相同：同一則貼文，先前已經處理過，不必重做
+    if (sig && sig !== "pending" && sig === prevSig) return;
+
+    if (sig) {
+      if (prevSig && prevSig !== sig) {
+        // 簽章不同 = 節點被虛擬清單回收顯示了另一則貼文，先清掉舊殘留
+        resetArticleState(article);
+      }
+      article.setAttribute(PROCESSED_ATTR, sig);
+    } else {
+      // 尚未抓到穩定簽章（例如時間戳記還沒渲染完成），先標記為 pending，
+      // 之後 MutationObserver 或下次掃描抓到簽章時會自動重新套用
+      if (prevSig === "pending") return;
+      article.setAttribute(PROCESSED_ATTR, "pending");
+    }
+
     applyTweetFilter(article);
   }
 
@@ -821,8 +933,7 @@
 
     document.querySelectorAll('article[data-testid="tweet"]').forEach((article) => {
       article.removeAttribute(PROCESSED_ATTR);
-      applyTweetFilter(article);
-      article.setAttribute(PROCESSED_ATTR, "true");
+      processTweet(article);
     });
 
     if (!anchor) return;
@@ -834,31 +945,38 @@
     });
   }
 
-  function scan(root) {
-    const scope = root && root.querySelectorAll ? root : document;
-    scope
-      .querySelectorAll(`article[data-testid="tweet"]:not([${PROCESSED_ATTR}])`)
-      .forEach(processTweet);
-  }
-
   function startObserver() {
     if (observer) observer.disconnect();
 
     observer = new MutationObserver((mutations) => {
+      // 用 Set 收集這批 mutation 實際影響到的「外層貼文」節點，
+      // 避免同一則貼文因為多筆 mutation 被重複處理
+      const touchedArticles = new Set();
+
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
           if (node.nodeType !== Node.ELEMENT_NODE) continue;
 
-          if (
-            node.matches &&
-            node.matches('article[data-testid="tweet"]')
-          ) {
-            processTweet(node);
-          } else {
-            scan(node);
+          if (node.matches && node.matches('article[data-testid="tweet"]')) {
+            touchedArticles.add(node);
+            continue;
+          }
+
+          // 虛擬清單回收：外層 <article> 不變，只有內部子節點被整批替換，
+          // 這種情況新增的節點會在某則貼文「內部」，要往上找到該貼文本身
+          const ancestorArticle =
+            node.closest && node.closest('article[data-testid="tweet"]');
+          if (ancestorArticle) touchedArticles.add(ancestorArticle);
+
+          if (node.querySelectorAll) {
+            node
+              .querySelectorAll('article[data-testid="tweet"]')
+              .forEach((a) => touchedArticles.add(a));
           }
         }
       }
+
+      touchedArticles.forEach(processTweet);
     });
 
     observer.observe(document.body, {
@@ -977,10 +1095,14 @@
 
     document.body.appendChild(panel);
 
-    // 全選 / 取消全選
+    // 全選 / 取消全選：直接寫回名單（flaggedRecords），並同步目前畫面上還掛著的 checkbox
     document.getElementById("xbf-select-all").addEventListener("change", (e) => {
+      const nextChecked = e.target.checked;
+      flaggedRecords.forEach((record) => {
+        record.checked = nextChecked;
+      });
       document.querySelectorAll(`.${SPAM_CHECKBOX_CLASS}`).forEach((cb) => {
-        cb.checked = e.target.checked;
+        cb.checked = nextChecked;
       });
       updateFloatingPanel();
     });
@@ -1008,10 +1130,9 @@
     if (!panel) return;
 
     const role = panel.dataset.role;
-    const allFlagged = document.querySelectorAll(`.${SPAM_FLAG_CLASS}`);
-    const checkedBoxes = document.querySelectorAll(`.${SPAM_CHECKBOX_CLASS}:checked`);
-    const total = allFlagged.length;
-    const selected = checkedBoxes.length;
+    const records = [...flaggedRecords.values()];
+    const total = records.length;
+    const selected = records.filter((r) => r.checked).length;
 
     const sub = document.getElementById("xbf-panel-sub");
     if (sub) sub.textContent = `偵測到 ${total} 則疑似機器人留言`;
@@ -1039,6 +1160,7 @@
     if (selectAll) {
       selectAll.checked = total > 0 && selected === total;
       selectAll.indeterminate = false;
+      selectAll.disabled = queueRunning;
     }
 
     // 更新面板主題
@@ -1049,13 +1171,11 @@
   function destroyCreatorMode() {
     const panel = document.getElementById(CREATOR_PANEL_ID);
     if (panel) panel.remove();
-    document.querySelectorAll(`.${SPAM_FLAG_CLASS}`).forEach((el) => {
-      clearSpamFlag(el);
-    });
+    document.querySelectorAll(`.${SPAM_CHECKBOX_WRAP_CLASS}`).forEach((wrap) => wrap.remove());
     creatorMode = false;
     creatorRole = null;
     currentTweetId = null;
-    actionQueue = [];
+    flaggedRecords = new Map();
     queueRunning = false;
   }
 
@@ -1107,27 +1227,66 @@
     return false;
   }
 
-  /** 取得該則貼文作者的顯示名稱與帳號（@handle） */
-  function getTweetNameAndHandle(article) {
-    const nameNode =
-      article.querySelector('[data-testid="User-Name"]') ||
-      article.querySelector('[data-testid="User-Names"]');
-    if (!nameNode) return null;
+  /**
+   * 確認留言是否成功封鎖：重新打開該則貼文的「更多(⋯)」選單，
+   * 檢查選項是否已變成「取消封鎖」/unblock（代表已經封鎖成功），
+   * 檢查完畢後關閉選單，不會真的點擊任何項目。
+   * 這是盡力而為的偵測方式，實際文字用語建議上線後再實測確認。
+   */
+  async function verifyBlockSucceeded(handle) {
+    const article = findArticleByHandle(handle);
+    if (!article) return false;
 
-    const link = nameNode.querySelector('a[href^="/"]');
-    const href = link ? link.getAttribute("href") || "" : "";
-    const m = href.match(/^\/([^/?]+)/);
-    const handle = m ? `@${m[1]}` : "";
+    const caret = article.querySelector('[data-testid="caret"]');
+    if (!caret) return false;
 
-    // 顯示名稱：取節點內文字並排除「@handle」那一行
-    const lines = (nameNode.innerText || "")
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const displayName = lines.find((line) => !line.startsWith("@")) || "";
+    caret.click();
+    const menu = await waitForElement('[role="menu"]', 1500);
+    if (!menu) return false;
+    await new Promise((r) => setTimeout(r, 150));
 
-    if (!displayName && !handle) return null;
-    return `${displayName}${handle}`;
+    const items = document.querySelectorAll('[role="menuitem"], [role="option"]');
+    let success = false;
+    for (const item of items) {
+      const text = (item.innerText || item.textContent || "").toLowerCase().trim();
+      if (text.includes("取消封鎖") || text.includes("unblock")) {
+        success = true;
+        break;
+      }
+    }
+
+    const escEvent = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+    document.dispatchEvent(escEvent);
+    await new Promise((r) => setTimeout(r, 200));
+
+    return success;
+  }
+
+  /** 對指定的貼文節點執行一次完整的「三個點(更多) → 封鎖 → 封鎖(確認)」點擊動作 */
+  async function performBlockClick(article) {
+    try {
+      const caret = article.querySelector('[data-testid="caret"]');
+      if (!caret) throw new Error("找不到 caret");
+      caret.click();
+
+      const menu = await waitForElement('[role="menu"]', 2000);
+      if (!menu) throw new Error("選單未出現");
+      await new Promise((r) => setTimeout(r, 150));
+      const clicked = await clickBlockMenuItem();
+      if (!clicked) throw new Error("找不到封鎖選項");
+
+      await new Promise((r) => setTimeout(r, 500));
+      const confirmSheet = await waitForElement('[data-testid="confirmationSheetConfirm"]', 2000);
+      if (confirmSheet) confirmSheet.click();
+
+      await new Promise((r) => setTimeout(r, 600));
+      return true;
+    } catch (err) {
+      const escEvent = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+      document.dispatchEvent(escEvent);
+      await new Promise((r) => setTimeout(r, 300));
+      return false;
+    }
   }
 
   /** 匯出封鎖使用者名單為 .txt（含顯示名稱＋帳號，例如：香寒🌸同城上门🌸外围选妃@PhoebeUrqupcsw） */
@@ -1158,49 +1317,53 @@
     if (el) el.textContent = text;
   }
 
-  /** 模擬點擊佇列主函式（發文者：隱藏回覆 / 隱藏+封鎖） */
+  /** 模擬點擊佇列主函式（發文者：隱藏回覆 / 隱藏+封鎖）— 依名單裡的紀錄逐一處理 */
   async function enqueueActions(actionType) {
     if (queueRunning) return;
 
-    // 收集目前被勾選的 article
-    const checkedBoxes = [...document.querySelectorAll(`.${SPAM_CHECKBOX_CLASS}:checked`)];
-    if (checkedBoxes.length === 0) return;
-
-    actionQueue = checkedBoxes.map((cb) => cb.closest('article[data-testid="tweet"]')).filter(Boolean);
-    if (actionQueue.length === 0) return;
+    // 一開始先確認名單內有沒有任何 ON 的項目，完全沒有就不啟動
+    const hasAnyOn = [...flaggedRecords.values()].some((r) => r.checked);
+    if (!hasAnyOn) return;
 
     queueRunning = true;
     updateFloatingPanel();
 
-    const total = actionQueue.length;
     let done = 0;
 
-    for (const article of actionQueue) {
-      if (!article.isConnected) {
-        done++;
-        continue;
+    while (true) {
+      // 1. 名單內有無 checkbox/ON 的留言？
+      const record = [...flaggedRecords.values()].find((r) => r.checked);
+      if (!record) {
+        // 無 → 停止封鎖/隱藏程式
+        break;
       }
 
-      setProgress(`處理中… ${done + 1} / ${total}`);
+      setProgress(`處理中… 第 ${done + 1} 則`);
 
       try {
-        // 1. 滾動至目標推文
+        // 有 → 執行動作。先移動到記錄裡的滾輪位置，讓虛擬清單重新掛載這則貼文
+        window.scrollTo({ top: Math.max(record.scrollY - 200, 0), behavior: "smooth" });
+        await new Promise((r) => setTimeout(r, 500));
+
+        const article = findArticleByHandle(record.handle);
+        if (!article) throw new Error("找不到對應貼文");
+
         article.scrollIntoView({ behavior: "smooth", block: "center" });
         await new Promise((r) => setTimeout(r, 400));
 
-        // 2. 點擊三點選單 (caret)
+        // 點擊三點選單 (caret)
         const caret = article.querySelector('[data-testid="caret"]');
         if (!caret) throw new Error("找不到 caret");
         caret.click();
 
-        // 3. 等待選單出現並點擊「隱藏回覆」
+        // 等待選單出現並點擊「隱藏回覆」
         const menu = await waitForElement('[role="menu"]', 2000);
         if (!menu) throw new Error("選單未出現");
         await new Promise((r) => setTimeout(r, 150));
         const clicked = await clickHideReplyMenuItem();
         if (!clicked) throw new Error("找不到隱藏回覆選項");
 
-        // 4. 等待確認對話框「也要封鎖嗎？」
+        // 等待確認對話框「也要封鎖嗎？」
         await new Promise((r) => setTimeout(r, 500));
         const confirmSheet = await waitForElement('[data-testid="confirmationSheetConfirm"]', 2000);
         const cancelSheet = document.querySelector('[data-testid="confirmationSheetCancel"]');
@@ -1218,9 +1381,7 @@
           confirmSheet.click();
         }
 
-        // 5. 成功：清除標記
         await new Promise((r) => setTimeout(r, 300));
-        clearSpamFlag(article);
       } catch (err) {
         // 單一項目失敗：關閉可能殘留的選單再繼續
         const escEvent = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
@@ -1228,19 +1389,23 @@
         await new Promise((r) => setTimeout(r, 300));
       }
 
+      // 2. 不論成功或失敗，刪除那條剛被執行動作的臨時資料，避免卡在同一筆無限重試
+      flaggedRecords.delete(record.handle);
+      const doneArticle = findArticleByHandle(record.handle);
+      if (doneArticle) removeCreatorCheckbox(doneArticle);
+
       done++;
-      // 6. 隨機延遲 1.5s ~ 3s
-      if (done < total) {
-        await randomDelay(1500, 3000);
-      }
+      updateFloatingPanel();
+
+      // 3. 迴圈：隨機延遲 1.5s ~ 3s 後回到步驟 1
+      await randomDelay(1500, 3000);
     }
 
     queueRunning = false;
-    actionQueue = [];
     setProgress(`完成！已處理 ${done} 則留言。`);
     updateFloatingPanel();
 
-    // 7. 完成後跳轉（僅剩「隱藏清單」，已移除「封鎖清單」）
+    // 完成後跳轉（僅剩「隱藏清單」，已移除「封鎖清單」）
     const redirect = getRedirectOption();
     await new Promise((r) => setTimeout(r, 800));
     if (redirect === "hidden" && currentTweetId) {
@@ -1254,76 +1419,90 @@
   }
 
   /**
-   * 讀者模式主函式：紀錄封鎖使用者名稱 → 匯出封鎖使用者名單.txt →
-   * 逐一點擊「更多(⋯)」→「封鎖」→「封鎖」確認。
-   * 讀者無法隱藏他人貼文的回覆，因此只能對可疑帳號進行封鎖。
+   * 讀者模式主函式：
+   * 找名單第一筆要處理的留言 → 給時間讓留言刷新出來 → 執行封鎖動作 →
+   * [A] 名單內有無 checkbox/ON 且尚未標記「已封鎖」的留言？
+   *     有 → 執行封鎖動作；無 → 停止封鎖程式，並刪除已標記「已封鎖」的資料。
+   * → 確認留言是否成功封鎖：
+   *     成功 → 繼續；失敗 → 回到無二次確認彈窗的預設狀態、重新找封鎖按鈕再執行一次 → 標記已封鎖。
+   * → 回到 [A] 再檢查一次（迴圈）。
+   * 讀者無法隱藏他人貼文的回覆，因此只能封鎖。
    */
   async function enqueueReaderBlockActions() {
     if (queueRunning) return;
 
-    const checkedBoxes = [...document.querySelectorAll(`.${SPAM_CHECKBOX_CLASS}:checked`)];
-    if (checkedBoxes.length === 0) return;
+    const onTargets = [...flaggedRecords.values()].filter((r) => r.checked && !r.blocked);
+    if (onTargets.length === 0) return;
 
-    actionQueue = checkedBoxes.map((cb) => cb.closest('article[data-testid="tweet"]')).filter(Boolean);
-    if (actionQueue.length === 0) return;
-
-    // 1. 紀錄封鎖使用者名稱（顯示名稱＋帳號）
-    const usernames = actionQueue.map(getTweetNameAndHandle).filter(Boolean);
-
-    // 2. 匯出封鎖使用者名單.txt
-    exportBlockedUsernames(usernames);
+    // 匯出目前 ON 的封鎖使用者名單.txt（處理前先匯出一次快照）
+    exportBlockedUsernames(onTargets.map((r) => r.label));
 
     queueRunning = true;
     updateFloatingPanel();
 
-    const total = actionQueue.length;
     let done = 0;
 
-    for (const article of actionQueue) {
-      if (!article.isConnected) {
-        done++;
-        continue;
+    while (true) {
+      // [A] 名單內有無 checkbox/ON 且尚未標記「已封鎖」的留言？
+      const record = [...flaggedRecords.values()].find((r) => r.checked && !r.blocked);
+      if (!record) {
+        // 無 → 停止封鎖程式
+        break;
       }
 
-      setProgress(`處理中… ${done + 1} / ${total}`);
+      setProgress(`處理中… 第 ${done + 1} 則`);
 
-      try {
+      // 找到留言並給予時間讓留言刷新出來
+      window.scrollTo({ top: Math.max(record.scrollY - 200, 0), behavior: "smooth" });
+      await new Promise((r) => setTimeout(r, 500));
+      let article = findArticleByHandle(record.handle);
+      if (article) {
         article.scrollIntoView({ behavior: "smooth", block: "center" });
-        await new Promise((r) => setTimeout(r, 400));
-
-        // 3. 三個點(更多)
-        const caret = article.querySelector('[data-testid="caret"]');
-        if (!caret) throw new Error("找不到 caret");
-        caret.click();
-
-        // 4. 封鎖（選單項目）
-        const menu = await waitForElement('[role="menu"]', 2000);
-        if (!menu) throw new Error("選單未出現");
-        await new Promise((r) => setTimeout(r, 150));
-        const clicked = await clickBlockMenuItem();
-        if (!clicked) throw new Error("找不到封鎖選項");
-
-        // 5. 封鎖（確認對話框）
         await new Promise((r) => setTimeout(r, 500));
-        const confirmSheet = await waitForElement('[data-testid="confirmationSheetConfirm"]', 2000);
-        if (confirmSheet) confirmSheet.click();
+        article = findArticleByHandle(record.handle); // 重新抓一次，避免刷新後節點已替換
+      }
 
-        await new Promise((r) => setTimeout(r, 300));
-        clearSpamFlag(article);
-      } catch (err) {
+      // 執行封鎖動作
+      if (article) {
+        await performBlockClick(article);
+      }
+
+      // 確認留言是否成功封鎖
+      let success = article ? await verifyBlockSucceeded(record.handle) : false;
+
+      if (!success) {
+        // 回到預設無二次確認彈窗狀態
         const escEvent = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
         document.dispatchEvent(escEvent);
         await new Promise((r) => setTimeout(r, 300));
+
+        // 查找封鎖按鈕並執行封鎖動作（重試一次）
+        const retryArticle = findArticleByHandle(record.handle);
+        if (retryArticle) {
+          await performBlockClick(retryArticle);
+        }
       }
+
+      // 標記留言已被封鎖（不論最終是否再次驗證成功，避免卡在同一筆無限重試）
+      record.blocked = true;
 
       done++;
-      if (done < total) {
-        await randomDelay(1500, 3000);
-      }
+      updateFloatingPanel();
+
+      // 迴圈：隨機延遲 1.5s ~ 3s 後回到 [A] 再檢查一次
+      await randomDelay(1500, 3000);
     }
 
+    // 停止後：刪除所有已標記「已封鎖」的資料
+    [...flaggedRecords.entries()].forEach(([handle, r]) => {
+      if (r.blocked) {
+        flaggedRecords.delete(handle);
+        const doneArticle = findArticleByHandle(handle);
+        if (doneArticle) removeCreatorCheckbox(doneArticle);
+      }
+    });
+
     queueRunning = false;
-    actionQueue = [];
     setProgress(`完成！已處理 ${done} 則留言。`);
     updateFloatingPanel();
   }
@@ -1360,15 +1539,32 @@
     await loadSettings();
     applyCopyModeClass();
     bindCopyModeListeners();
+    bindQueueLockListeners();
     checkCreatorModeInit();
     rescanAll();
     startObserver();
 
     // 監聽 X 的 SPA 路由變化（URL 改變時重新判斷貼文管理模式）
+    // 同時輪詢核對目前畫面上每則貼文的簽章：虛擬清單有時只在原地更新
+    // 內容（不會觸發 childList mutation，尤其是往上捲動回收節點時），
+    // MutationObserver 可能因此錯過；輪詢能確保這類情況也會被重新套用篩選。
     setInterval(() => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
-        checkCreatorModeInit();
+        // 換頁：清除臨時名單與畫面上殘留的 checkbox，0.5 秒後再重新載入
+        flaggedRecords = new Map();
+        document.querySelectorAll(`.${SPAM_CHECKBOX_WRAP_CLASS}`).forEach((wrap) => wrap.remove());
+        suppressCreatorSync = true;
+        setTimeout(() => {
+          suppressCreatorSync = false;
+          checkCreatorModeInit();
+          rescanAll({ preserveScroll: false });
+        }, 500);
+      }
+      if (!suppressCreatorSync) {
+        document
+          .querySelectorAll('article[data-testid="tweet"]')
+          .forEach(processTweet);
       }
     }, 800);
   }
