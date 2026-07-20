@@ -2,6 +2,12 @@
 
 X/Twitter 自訂關鍵字與帳號過濾器。在瀏覽 X 時，自動將包含指定關鍵字的貼文或特定使用者名稱的貼文隱藏，避免機器人洗版並保持留言區乾淨。支援複製模式、偵錯標記、滾動錨定以及黑暗模式切換。
 
+## 隱私與合規聲明 / Privacy & Compliance
+ 
+> **Privacy & Compliance:** This extension operates entirely locally on your browser. It does not communicate with any external servers, does not collect any user data, and does not use or interact with the Twitter/X API. It is purely a DOM-manipulation tool for personal browsing experience optimization.
+ 
+> **隱私與合規聲明：** 本擴充功能完全運行於本地端。不與任何外部伺服器連線，不蒐集用戶資料，且不使用或與 Twitter/X API 進行互動。純屬個人瀏覽體驗優化的 DOM 操作工具。
+
 ## 功能特點
 
 - 🎯 **多維度過濾**：
