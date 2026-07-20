@@ -94,7 +94,7 @@ html:not([data-theme="dark"]) .theme-btn .icon-sun {
 
 .toggle-group {
   margin: 12px 0 0;
-  padding: 2px 12px;
+  padding: 8px 12px;
   background: var(--surface-gray);
   border-radius: 8px;
 }
@@ -103,7 +103,7 @@ html:not([data-theme="dark"]) .theme-btn .icon-sun {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 0;
+  padding: 6px 0;
 }
 
 .toggle-row + .toggle-row {
@@ -113,6 +113,38 @@ html:not([data-theme="dark"]) .theme-btn .icon-sun {
 .toggle-label {
   font-weight: 600;
   font-size: 13px;
+}
+
+/* === 模式切換按鈕（過濾模式 / 選中模式，二選一） === */
+.mode-btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 10px 4px;
+  border: none;
+  border-radius: 8px;
+  background: #9ca3af;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.mode-btn:hover {
+  background: #6b7280;
+}
+
+.mode-btn.active {
+  background: #22c55e;
+}
+
+.mode-btn.active:hover {
+  background: #16a34a;
 }
 
 .switch {

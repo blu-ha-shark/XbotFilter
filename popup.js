@@ -1,10 +1,9 @@
-const enabledEl = document.getElementById("enabled");
-const markSelectedEl = document.getElementById("markSelected");
 const copyModeEl = document.getElementById("copyMode");
 const themeBtn = document.getElementById("themeBtn");
 const exportBtn = document.getElementById("exportBtn");
 const importBtn = document.getElementById("importBtn");
 const importFile = document.getElementById("importFile");
+const modeButtons = Array.from(document.querySelectorAll(".mode-btn"));
 
 const DEFAULT_SETTINGS = {
   contentKeywords: [],
@@ -29,6 +28,25 @@ function uniqueKeywords(list) {
   return result;
 }
 
+/**
+ * 過濾模式 / 選中模式 為互斥模式，同時間僅能有一個啟用（或全部關閉）。
+ * 用來修正舊版資料可能同時存在兩者皆為 true 的情況。
+ */
+function normalizeModes(settings) {
+  const s = { ...settings };
+  if (s.markSelected) {
+    s.enabled = false;
+    s.markSelected = true;
+  } else if (s.enabled) {
+    s.enabled = true;
+    s.markSelected = false;
+  } else {
+    s.enabled = false;
+    s.markSelected = false;
+  }
+  return s;
+}
+
 /** 把舊版 keywords 合併進 contentKeywords，並刪除殘留的 keywords */
 function migrateLegacyKeywords(result, callback) {
   const legacyKeywords = Array.isArray(result.keywords) ? result.keywords : [];
@@ -42,14 +60,14 @@ function migrateLegacyKeywords(result, callback) {
     Array.isArray(result.usernameKeywords) ? result.usernameKeywords : []
   );
 
-  const settings = {
+  const settings = normalizeModes({
     contentKeywords,
     usernameKeywords,
     enabled: result.enabled !== false,
     markSelected: result.markSelected === true,
     copyMode: result.copyMode === true,
     darkMode: result.darkMode === true,
-  };
+  });
 
   if (!hasLegacy) {
     callback(settings);
@@ -69,14 +87,17 @@ function getAllSettings(callback) {
 }
 
 function saveAllSettings(settings) {
-  const next = {
+  const next = normalizeModes({
     contentKeywords: uniqueKeywords(settings.contentKeywords),
     usernameKeywords: uniqueKeywords(settings.usernameKeywords),
-    enabled: settings.enabled !== false,
+    enabled: settings.enabled === true,
     markSelected: settings.markSelected === true,
     copyMode: settings.copyMode === true,
     darkMode: settings.darkMode === true,
-  };
+  });
+  next.contentKeywords = uniqueKeywords(settings.contentKeywords);
+  next.usernameKeywords = uniqueKeywords(settings.usernameKeywords);
+
   chrome.storage.sync.set(next, () => {
     chrome.storage.sync.remove("keywords");
   });
@@ -84,8 +105,6 @@ function saveAllSettings(settings) {
 
 function getCurrentToggles() {
   return {
-    enabled: enabledEl ? enabledEl.checked : true,
-    markSelected: markSelectedEl ? markSelectedEl.checked : false,
     copyMode: copyModeEl ? copyModeEl.checked : false,
     darkMode: document.documentElement ? document.documentElement.dataset.theme === "dark" : false,
   };
@@ -260,12 +279,41 @@ function renderAllKeywords(settings) {
   });
 }
 
+/** 更新兩個模式按鈕的啟用(綠)/未啟用(灰)樣式 */
+function updateModeButtons(settings) {
+  modeButtons.forEach((btn) => {
+    const key = btn.dataset.mode;
+    const active = settings[key] === true;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+/** 點擊模式按鈕：二選一（再次點擊啟用中的按鈕會全部關閉） */
+function setMode(modeKey) {
+  getAllSettings((settings) => {
+    const isActive = settings[modeKey] === true;
+    const next = {
+      enabled: false,
+      markSelected: false,
+    };
+    if (!isActive) next[modeKey] = true;
+
+    const merged = { ...settings, ...next, ...getCurrentToggles() };
+    saveAllSettings(merged);
+    updateModeButtons(merged);
+  });
+}
+
+modeButtons.forEach((btn) => {
+  btn.addEventListener("click", () => setMode(btn.dataset.mode));
+});
+
 function loadSettings() {
   getAllSettings((settings) => {
-    if (enabledEl) enabledEl.checked = settings.enabled;
-    if (markSelectedEl) markSelectedEl.checked = settings.markSelected;
     if (copyModeEl) copyModeEl.checked = settings.copyMode;
     applyTheme(settings.darkMode);
+    updateModeButtons(settings);
     renderAllKeywords(settings);
   });
 }
@@ -314,15 +362,13 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
 });
 
-function onToggleChange() {
+function onCopyModeToggle() {
   getAllSettings((settings) => {
     saveAllSettings({ ...settings, ...getCurrentToggles() });
   });
 }
 
-if (enabledEl) enabledEl.addEventListener("change", onToggleChange);
-if (markSelectedEl) markSelectedEl.addEventListener("change", onToggleChange);
-if (copyModeEl) copyModeEl.addEventListener("change", onToggleChange);
+if (copyModeEl) copyModeEl.addEventListener("change", onCopyModeToggle);
 
 if (themeBtn) {
   themeBtn.addEventListener("click", () => {
@@ -343,9 +389,10 @@ function formatTextSettings(settings) {
     "# 2. [Content] 標記下方代表「貼文內容過濾」關鍵字，每行請填寫一個關鍵字（如：免費領取）。",
     "# 3. [Username] 標記下方代表「使用者名稱過濾」關鍵字，每行請填寫一個帳號或關鍵字（如：bot123 或 @spam）。",
     "# 4. 其他全域開關設定（請寫在各自標記下方，填入 true 或 false）：",
-    "#    - [Enabled] 啟用過濾 (true=開啟, false=關閉)",
-    "#    - [MarkSelected] 關鍵字選中標記模式 (true=開啟徽章標記, false=直接隱藏)",
-    "#    - [CopyMode] 文字複製模式 (true=開啟, false=關閉)",
+    "#    - [Enabled] 過濾模式 (true=開啟, false=關閉)",
+    "#    - [MarkSelected] 選中模式 (true=開啟徽章標記, false=關閉)",
+    "#    - 注意：過濾模式 / 選中模式 互斥，請僅將其中一個設為 true（或全部 false）。",
+    "#    - [CopyMode] 文字複製模式 (true=開啟, false=關閉，此項獨立於上述兩種模式)",
     "#    - [DarkMode] 設定面板黑暗模式 (true=黑暗, false=淺色)",
     "",
     "[Enabled]",
@@ -387,22 +434,22 @@ function parseTextSettings(text) {
     copyMode: false,
     darkMode: false,
   };
-  
+
   let currentSection = null;
   let hasSections = false;
-  
+
   for (let line of lines) {
     line = line.trim();
     if (!line || line.startsWith("#")) {
       continue;
     }
-    
+
     if (line.startsWith("[") && line.endsWith("]")) {
       currentSection = line.slice(1, -1).toLowerCase();
       hasSections = true;
       continue;
     }
-    
+
     if (currentSection === "content") {
       settings.contentKeywords.push(line);
     } else if (currentSection === "username") {
@@ -417,11 +464,11 @@ function parseTextSettings(text) {
       settings.darkMode = line.toLowerCase() === "true";
     }
   }
-  
+
   if (!hasSections && text.trim().length > 0) {
     throw new Error("Invalid text format: No sections found.");
   }
-  
+
   return settings;
 }
 
@@ -468,10 +515,9 @@ if (importFile) {
 
         migrateLegacyKeywords(data, (settings) => {
           saveAllSettings(settings);
-          if (enabledEl) enabledEl.checked = settings.enabled;
-          if (markSelectedEl) markSelectedEl.checked = settings.markSelected;
           if (copyModeEl) copyModeEl.checked = settings.copyMode;
           applyTheme(settings.darkMode);
+          updateModeButtons(settings);
           renderAllKeywords(settings);
         });
       } catch (err) {
